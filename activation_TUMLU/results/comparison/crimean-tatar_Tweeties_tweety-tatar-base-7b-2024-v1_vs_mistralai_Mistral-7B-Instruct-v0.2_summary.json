@@ -1,0 +1,119 @@
+{
+  "models": {
+    "model1": "Tweeties/tweety-tatar-base-7b-2024-v1",
+    "model2": "mistralai/Mistral-7B-Instruct-v0.2"
+  },
+  "language": "crimean-tatar",
+  "accuracy": {
+    "model1": 0.24381625441696114,
+    "model2": 0.26501766784452296,
+    "difference": -0.02120141342756182,
+    "winner": "mistralai/Mistral-7B-Instruct-v0.2"
+  },
+  "by_subject": {
+    "model1": {
+      "biology": {
+        "correct": 10,
+        "total": 43,
+        "valid": 43,
+        "accuracy": 0.23255813953488372
+      },
+      "chemistry": {
+        "correct": 9,
+        "total": 37,
+        "valid": 37,
+        "accuracy": 0.24324324324324326
+      },
+      "geography": {
+        "correct": 7,
+        "total": 28,
+        "valid": 28,
+        "accuracy": 0.25
+      },
+      "history": {
+        "correct": 16,
+        "total": 74,
+        "valid": 74,
+        "accuracy": 0.21621621621621623
+      },
+      "language and literature": {
+        "correct": 1,
+        "total": 8,
+        "valid": 8,
+        "accuracy": 0.125
+      },
+      "maths": {
+        "correct": 14,
+        "total": 59,
+        "valid": 59,
+        "accuracy": 0.23728813559322035
+      },
+      "physics": {
+        "correct": 12,
+        "total": 34,
+        "valid": 34,
+        "accuracy": 0.35294117647058826
+      }
+    },
+    "model2": {
+      "biology": {
+        "correct": 10,
+        "total": 43,
+        "valid": 42,
+        "accuracy": 0.23255813953488372
+      },
+      "chemistry": {
+        "correct": 10,
+        "total": 37,
+        "valid": 37,
+        "accuracy": 0.2702702702702703
+      },
+      "geography": {
+        "correct": 8,
+        "total": 28,
+        "valid": 27,
+        "accuracy": 0.2857142857142857
+      },
+      "history": {
+        "correct": 23,
+        "total": 74,
+        "valid": 74,
+        "accuracy": 0.3108108108108108
+      },
+      "language and literature": {
+        "correct": 1,
+        "total": 8,
+        "valid": 8,
+        "accuracy": 0.125
+      },
+      "maths": {
+        "correct": 15,
+        "total": 59,
+        "valid": 58,
+        "accuracy": 0.2542372881355932
+      },
+      "physics": {
+        "correct": 8,
+        "total": 34,
+        "valid": 34,
+        "accuracy": 0.23529411764705882
+      }
+    }
+  },
+  "neurons": {
+    "model1": {
+      "active": 458738,
+      "specific": 4588
+    },
+    "model2": {
+      "active": 458741,
+      "specific": 4588
+    },
+    "overlap": {
+      "overlap": 2404,
+      "only_model1": 2184,
+      "only_model2": 2184,
+      "jaccard": 0.35499113998818665
+    }
+  }
+}
