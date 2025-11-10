@@ -1,16 +1,22 @@
-import argparse
 import json
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, Tuple, List
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from collections import defaultdict
 import seaborn as sns
 
+# --------- ВИЗУАЛЬНЫЕ НАСТРОЙКИ ---------
 sns.set_style("whitegrid")
 plt.rcParams['figure.figsize'] = (14, 10)
 plt.rcParams['font.size'] = 10
 
+LANG1_COL = "crh_Cyrl"
+LANG2_COL = "eng"
+NAME1 = "Tweeties/tweety-tatar-base-7b-2024-v1"
+NAME2 = "mistralai/Mistral-7B-Instruct-v0.2"
+JSON1_PATH = f"activation_parallel/activation_results/json/{LANG1_COL}_{LANG2_COL}_{NAME1.replace('/', '_')}.json"  # первый JSON
+JSON2_PATH = f"activation_parallel/activation_results/json/{LANG1_COL}_{LANG2_COL}_{NAME2.replace('/', '_')}.json"  # второй JSON
+
+OUTPUT_PREFIX = f"activation_parallel/activation_results/comparison/{LANG1_COL}_{LANG2_COL}_{NAME1.replace('/', '_')}_vs_{NAME2.replace('/', '_')}"                 # префикс для файлов
 
 def load_json(path: str) -> Dict[str, Any]:
     """Load JSON file."""
@@ -151,7 +157,10 @@ def analyze_layer_distribution(data1: Dict, data2: Dict, name1: str, name2: str,
     
     # Find layers with most differences
     report.append(f"\nСлои с наибольшими различиями ({lang1_name}-специфичные):")
-    diff_lang1 = np.array(layer_counts1_lang1) - np.array(layer_counts2_lang1)
+    diff_lang1 = np.array(layer_counts1_lang1) - np.array(layer_counts2_lang1[:num_layers1] + [0]*(num_layers1 - min(num_layers1, num_layers2)))
+    # Исправим diff корректно под минимальное число слоёв:
+    min_layers = min(num_layers1, num_layers2)
+    diff_lang1 = np.array(layer_counts1_lang1[:min_layers]) - np.array(layer_counts2_lang1[:min_layers])
     top_diff_idx = np.argsort(np.abs(diff_lang1))[-5:][::-1]
     for idx in top_diff_idx:
         report.append(f"  Слой {idx}: {name1}={layer_counts1_lang1[idx]}, {name2}={layer_counts2_lang1[idx]}, разница={diff_lang1[idx]}")
@@ -161,45 +170,6 @@ def analyze_layer_distribution(data1: Dict, data2: Dict, name1: str, name2: str,
     data_array2 = np.array([layer_counts2_lang1, layer_counts2_lang2])
     
     return "\n".join(report), data_array1, data_array2
-
-
-def analyze_top_neurons(data1: Dict, data2: Dict, name1: str, name2: str, lang1_name: str, lang2_name: str) -> str:
-    """Analyze top language-specific neurons by rate difference."""
-    report = []
-    report.append("\n" + "=" * 80)
-    report.append("ТОП НЕЙРОНОВ ПО РАЗНИЦЕ АКТИВАЦИИ")
-    report.append("=" * 80)
-    
-    top1 = data1.get('top_lang1_specific_by_rate_diff', [])[:20]
-    top2 = data2.get('top_lang1_specific_by_rate_diff', [])[:20]
-    
-    report.append(f"\nТоп 10 для {name1}:")
-    report.append(f"{'Слой':<8} {'Нейрон':<10} {lang1_name + ' rate':<15} {lang2_name + ' rate':<15} {'Разница':<15}")
-    report.append("-" * 70)
-    for i, neuron in enumerate(top1[:10]):
-        report.append(f"{neuron['layer']:<8} {neuron['neuron']:<10} "
-                     f"{neuron['lang1_rate']:<15.4f} {neuron['lang2_rate']:<15.4f} "
-                     f"{neuron['rate_diff']:<15.4f}")
-    
-    report.append(f"\nТоп 10 для {name2}:")
-    report.append(f"{'Слой':<8} {'Нейрон':<10} {lang1_name + ' rate':<15} {lang2_name + ' rate':<15} {'Разница':<15}")
-    report.append("-" * 70)
-    for i, neuron in enumerate(top2[:10]):
-        report.append(f"{neuron['layer']:<8} {neuron['neuron']:<10} "
-                     f"{neuron['lang1_rate']:<15.4f} {neuron['lang2_rate']:<15.4f} "
-                     f"{neuron['rate_diff']:<15.4f}")
-    
-    # Compare statistics of rate differences
-    diffs1 = [n['rate_diff'] for n in top1]
-    diffs2 = [n['rate_diff'] for n in top2]
-    
-    report.append(f"\nСтатистика разниц активаций (топ-20):")
-    report.append(f"{'Модель':<20} {'Макс':<15} {'Среднее':<15} {'Медиана':<15}")
-    report.append("-" * 70)
-    report.append(f"{name1:<20} {max(diffs1):<15.4f} {np.mean(diffs1):<15.4f} {np.median(diffs1):<15.4f}")
-    report.append(f"{name2:<20} {max(diffs2):<15.4f} {np.mean(diffs2):<15.4f} {np.median(diffs2):<15.4f}")
-    
-    return "\n".join(report)
 
 
 def calculate_overlap(data1: Dict, data2: Dict, name1: str, name2: str, lang1_name: str, lang2_name: str) -> Tuple[Dict, str]:
@@ -240,23 +210,25 @@ def calculate_overlap(data1: Dict, data2: Dict, name1: str, name2: str, lang1_na
     only_model2_lang2 = set2_lang2 - set1_lang2
     
     # Jaccard similarity
-    jaccard_lang1 = len(overlap_lang1) / len(set1_lang1 | set2_lang1) if len(set1_lang1 | set2_lang1) > 0 else 0
-    jaccard_lang2 = len(overlap_lang2) / len(set1_lang2 | set2_lang2) if len(set1_lang2 | set2_lang2) > 0 else 0
+    union_lang1 = set1_lang1 | set2_lang1
+    union_lang2 = set1_lang2 | set2_lang2
+    jaccard_lang1 = len(overlap_lang1) / len(union_lang1) if len(union_lang1) > 0 else 0.0
+    jaccard_lang2 = len(overlap_lang2) / len(union_lang2) if len(union_lang2) > 0 else 0.0
     
     report.append(f"\n{lang1_name}-специфичные нейроны:")
-    report.append(f"  {name1}: {len(set1_lang1):,} нейронов")
-    report.append(f"  {name2}: {len(set2_lang1):,} нейронов")
-    report.append(f"  Пересечение: {len(overlap_lang1):,} нейронов ({100*len(overlap_lang1)/len(set1_lang1):.2f}% от {name1})")
-    report.append(f"  Только в {name1}: {len(only_model1_lang1):,} нейронов")
-    report.append(f"  Только в {name2}: {len(only_model2_lang1):,} нейронов")
+    report.append(f"  {NAME1}: {len(set1_lang1):,} нейронов")
+    report.append(f"  {NAME2}: {len(set2_lang1):,} нейронов")
+    report.append(f"  Пересечение: {len(overlap_lang1):,} нейронов ({(100*len(overlap_lang1)/len(set1_lang1)) if len(set1_lang1) else 0:.2f}% от {NAME1})")
+    report.append(f"  Только в {NAME1}: {len(only_model1_lang1):,} нейронов")
+    report.append(f"  Только в {NAME2}: {len(only_model2_lang1):,} нейронов")
     report.append(f"  Jaccard similarity: {jaccard_lang1:.4f}")
     
     report.append(f"\n{lang2_name}-специфичные нейроны:")
-    report.append(f"  {name1}: {len(set1_lang2):,} нейронов")
-    report.append(f"  {name2}: {len(set2_lang2):,} нейронов")
-    report.append(f"  Пересечение: {len(overlap_lang2):,} нейронов ({100*len(overlap_lang2)/len(set1_lang2):.2f}% от {name1})")
-    report.append(f"  Только в {name1}: {len(only_model1_lang2):,} нейронов")
-    report.append(f"  Только в {name2}: {len(only_model2_lang2):,} нейронов")
+    report.append(f"  {NAME1}: {len(set1_lang2):,} нейронов")
+    report.append(f"  {NAME2}: {len(set2_lang2):,} нейронов")
+    report.append(f"  Пересечение: {len(overlap_lang2):,} нейронов ({(100*len(overlap_lang2)/len(set1_lang2)) if len(set1_lang2) else 0:.2f}% от {NAME1})")
+    report.append(f"  Только в {NAME1}: {len(only_model1_lang2):,} нейронов")
+    report.append(f"  Только в {NAME2}: {len(only_model2_lang2):,} нейронов")
     report.append(f"  Jaccard similarity: {jaccard_lang2:.4f}")
     
     overlap_data = {
@@ -281,8 +253,7 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
                           layer_dist1: np.ndarray, layer_dist2: np.ndarray,
                           overlap_data: Dict, output_prefix: str, lang1_name: str, lang2_name: str):
     """Create comprehensive visualizations."""
-    
-    # Create a large figure with multiple subplots
+    # ------- Большое полотно: 3x3 -------
     fig = plt.figure(figsize=(20, 12))
     
     # 1. Layer distribution comparison - Model 1
@@ -311,7 +282,6 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     # 3. Direct comparison of layer distributions
     ax3 = plt.subplot(3, 3, 3)
     x = np.arange(min(data1['num_layers'], data2['num_layers']))
-    width = 0.35
     ax3.plot(x, layer_dist1[0][:len(x)], 'o-', label=f'{name1} - {lang1_name}', linewidth=2, markersize=4, color='#2E86AB')
     ax3.plot(x, layer_dist2[0][:len(x)], 's-', label=f'{name2} - {lang1_name}', linewidth=2, markersize=4, color='#58A4B0')
     ax3.plot(x, layer_dist1[1][:len(x)], 'o-', label=f'{name1} - {lang2_name}', linewidth=2, markersize=4, color='#A23B72')
@@ -338,7 +308,6 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
         sum(len(l) for l in data2['language_specific_masks']['lang2'])
     ]
     x = np.arange(len(categories))
-    width = 0.35
     ax4.bar(x - width/2, model1_vals, width, label=name1, alpha=0.8, color='#2E86AB')
     ax4.bar(x + width/2, model2_vals, width, label=name2, alpha=0.8, color='#F18F01')
     ax4.set_ylabel('Количество нейронов')
@@ -418,7 +387,7 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     print(f"Сохранено: {output_prefix}_comparison.png")
     plt.close()
     
-    # Create second figure for detailed layer-by-layer comparison
+    # ------- Детальное полотно 2x2 -------
     fig2, axes = plt.subplots(2, 2, figsize=(16, 12))
     
     # Difference plots
@@ -473,56 +442,264 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     plt.savefig(f'{output_prefix}_detailed.png', dpi=150, bbox_inches='tight')
     print(f"Сохранено: {output_prefix}_detailed.png")
     plt.close()
-    
-    # Create third figure for top neurons comparison
-    fig3, axes = plt.subplots(1, 2, figsize=(16, 6))
-    
-    top1 = data1.get('top_lang1_specific_by_rate_diff', [])[:30]
-    top2 = data2.get('top_lang1_specific_by_rate_diff', [])[:30]
-    
-    # Model 1 top neurons
-    diffs1 = [n['rate_diff'] for n in top1]
-    axes[0].barh(range(len(diffs1)), diffs1, color='#2E86AB', alpha=0.7)
-    axes[0].set_xlabel(f'Rate difference ({lang1_name} - {lang2_name})')
-    axes[0].set_ylabel('Ранг')
-    axes[0].set_title(f'{name1}: Топ-30 нейронов по разнице активации')
-    axes[0].invert_yaxis()
-    axes[0].grid(axis='x', alpha=0.3)
-    
-    # Model 2 top neurons
-    diffs2 = [n['rate_diff'] for n in top2]
-    axes[1].barh(range(len(diffs2)), diffs2, color='#F18F01', alpha=0.7)
-    axes[1].set_xlabel(f'Rate difference ({lang1_name} - {lang2_name})')
-    axes[1].set_ylabel('Ранг')
-    axes[1].set_title(f'{name2}: Топ-30 нейронов по разнице активации')
-    axes[1].invert_yaxis()
-    axes[1].grid(axis='x', alpha=0.3)
-    
+
+
+# ================= TOP-LANG1 (rate_diff) =================
+
+def _extract_top_arrays(top_list: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
+    """Преобразовать список dict'ов в numpy-массивы (без лимитов по длине)."""
+    if not top_list:
+        return {
+            "layer": np.array([], dtype=int),
+            "neuron": np.array([], dtype=int),
+            "lang1_rate": np.array([], dtype=float),
+            "lang2_rate": np.array([], dtype=float),
+            "rate_diff": np.array([], dtype=float),
+        }
+    layer = np.array([int(x.get("layer", -1)) for x in top_list], dtype=int)
+    neuron = np.array([int(x.get("neuron", -1)) for x in top_list], dtype=int)
+    lang1_rate = np.array([float(x.get("lang1_rate", 0.0)) for x in top_list], dtype=float)
+    lang2_rate = np.array([float(x.get("lang2_rate", 0.0)) for x in top_list], dtype=float)
+    rate_diff = np.array([float(x.get("rate_diff", 0.0)) for x in top_list], dtype=float)
+    return {
+        "layer": layer,
+        "neuron": neuron,
+        "lang1_rate": lang1_rate,
+        "lang2_rate": lang2_rate,
+        "rate_diff": rate_diff,
+    }
+
+
+def _summarize_rate_diff(arr: np.ndarray) -> Dict[str, float]:
+    if arr.size == 0:
+        return {"count": 0, "min": 0.0, "max": 0.0, "mean": 0.0, "std": 0.0,
+                "p25": 0.0, "p50": 0.0, "p75": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
+    return {
+        "count": int(arr.size),
+        "min": float(np.min(arr)),
+        "max": float(np.max(arr)),
+        "mean": float(np.mean(arr)),
+        "std": float(np.std(arr)),
+        "p25": float(np.percentile(arr, 25)),
+        "p50": float(np.percentile(arr, 50)),
+        "p75": float(np.percentile(arr, 75)),
+        "p90": float(np.percentile(arr, 90)),
+        "p95": float(np.percentile(arr, 95)),
+        "p99": float(np.percentile(arr, 99)),
+    }
+
+
+def analyze_top_lang1_section(data1: Dict, data2: Dict, name1: str, name2: str) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+    """Собрать текстовый отчёт по top_lang1_specific_by_rate_diff и подготовить массивы для графиков."""
+    report = []
+    report.append("\n" + "=" * 80)
+    report.append("TOP LANG1-SPECIFIC BY RATE_DIFF (БЕЗ ЛИМИТА)")
+    report.append("=" * 80)
+
+    top1 = data1.get("top_lang1_specific_by_rate_diff", [])
+    top2 = data2.get("top_lang1_specific_by_rate_diff", [])
+
+    A1 = _extract_top_arrays(top1)
+    A2 = _extract_top_arrays(top2)
+
+    s1 = _summarize_rate_diff(A1["rate_diff"])
+    s2 = _summarize_rate_diff(A2["rate_diff"])
+
+    report.append(f"\n{name1}: count={s1['count']:,}, min={s1['min']:.6f}, p50={s1['p50']:.6f}, "
+                  f"mean={s1['mean']:.6f}, max={s1['max']:.6f}")
+    report.append(f"{name2}: count={s2['count']:,}, min={s2['min']:.6f}, p50={s2['p50']:.6f}, "
+                  f"mean={s2['mean']:.6f}, max={s2['max']:.6f}")
+
+    # По слоям — топ слоям по количеству попаданий
+    if A1["layer"].size > 0:
+        unique_l1, counts_l1 = np.unique(A1["layer"], return_counts=True)
+        idx1 = np.argsort(counts_l1)[::-1]
+        top_layers_1 = list(zip(unique_l1[idx1][:10].tolist(), counts_l1[idx1][:10].tolist()))
+        report.append(f"\n{name1}: топ-10 слоёв по числу нейронов в списке:")
+        for L, C in top_layers_1:
+            report.append(f"  слой {L}: {C}")
+    if A2["layer"].size > 0:
+        unique_l2, counts_l2 = np.unique(A2["layer"], return_counts=True)
+        idx2 = np.argsort(counts_l2)[::-1]
+        top_layers_2 = list(zip(unique_l2[idx2][:10].tolist(), counts_l2[idx2][:10].tolist()))
+        report.append(f"\n{name2}: топ-10 слоёв по числу нейронов в списке:")
+        for L, C in top_layers_2:
+            report.append(f"  слой {L}: {C}")
+
+    # Небольшая стабильность: пересечение по (layer, neuron) внутри top-списков обеих моделей
+    set_m1 = set(zip(A1["layer"].tolist(), A1["neuron"].tolist()))
+    set_m2 = set(zip(A2["layer"].tolist(), A2["neuron"].tolist()))
+    inter = set_m1 & set_m2
+    union = set_m1 | set_m2
+    jaccard = (len(inter) / len(union)) if len(union) else 0.0
+    report.append(f"\nПересечение топ-списков (layer,neuron): {len(inter):,} | объединение: {len(union):,} | Jaccard={jaccard:.6f}")
+
+    return "\n".join(report), A1, A2
+
+
+def _maybe_subsample(x: np.ndarray, y: np.ndarray, max_points: int = 60000) -> Tuple[np.ndarray, np.ndarray]:
+    """Ограничить число точек для scatter/hexbin."""
+    n = x.size
+    if n <= max_points:
+        return x, y
+    idx = np.linspace(0, n - 1, max_points, dtype=int)
+    return x[idx], y[idx]
+
+
+def create_top_neurons_visualizations(A1: Dict[str, np.ndarray], A2: Dict[str, np.ndarray],
+                                      data1: Dict, data2: Dict, name1: str, name2: str,
+                                      output_prefix: str):
+    """Графики по top_lang1_specific_by_rate_diff (без лимита)."""
+    # Если данных нет — просто завершить
+    if A1["rate_diff"].size == 0 and A2["rate_diff"].size == 0:
+        print("Нет данных для top_lang1_specific_by_rate_diff — пропускаю визуализацию.")
+        return
+
+    fig = plt.figure(figsize=(20, 13))
+    gs = fig.add_gridspec(3, 3)
+
+    # 1) Гистограммы rate_diff
+    ax1 = fig.add_subplot(gs[0, 0])
+    bins = 60
+    if A1["rate_diff"].size:
+        ax1.hist(A1["rate_diff"], bins=bins, alpha=0.55, label=f"{name1}", color='#2E86AB', edgecolor='black')
+    if A2["rate_diff"].size:
+        ax1.hist(A2["rate_diff"], bins=bins, alpha=0.55, label=f"{name2}", color='#F18F01', edgecolor='black')
+    ax1.set_title("Распределение rate_diff (Lang1-specific)")
+    ax1.set_xlabel("rate_diff = p_lang1 - p_lang2")
+    ax1.set_ylabel("Частота")
+    ax1.legend()
+    ax1.grid(axis='y', alpha=0.3)
+
+    # 2) ECDF
+    ax2 = fig.add_subplot(gs[0, 1])
+    if A1["rate_diff"].size:
+        sorted1 = np.sort(A1["rate_diff"])
+        ax2.plot(sorted1, np.linspace(0, 1, sorted1.size), label=name1, linewidth=2)
+    if A2["rate_diff"].size:
+        sorted2 = np.sort(A2["rate_diff"])
+        ax2.plot(sorted2, np.linspace(0, 1, sorted2.size), label=name2, linewidth=2)
+    ax2.set_title("ECDF rate_diff")
+    ax2.set_xlabel("rate_diff")
+    ax2.set_ylabel("F(x)")
+    ax2.legend()
+    ax2.grid(alpha=0.3)
+
+    # 3) Scatter layer vs rate_diff (оба)
+    ax3 = fig.add_subplot(gs[0, 2])
+    if A1["layer"].size:
+        x1, y1 = _maybe_subsample(A1["layer"], A1["rate_diff"])
+        ax3.scatter(x1, y1, s=6, alpha=0.35, label=name1, color='#2E86AB')
+    if A2["layer"].size:
+        x2, y2 = _maybe_subsample(A2["layer"], A2["rate_diff"])
+        ax3.scatter(x2, y2, s=6, alpha=0.35, label=name2, color='#F18F01')
+    ax3.set_title("Слой vs rate_diff (scatter)")
+    ax3.set_xlabel("Слой")
+    ax3.set_ylabel("rate_diff")
+    ax3.legend(markerscale=2)
+    ax3.grid(alpha=0.3)
+
+    # 4) Hexbin для Model 1
+    ax4 = fig.add_subplot(gs[1, 0])
+    if A1["layer"].size:
+        ax4.hexbin(A1["layer"], A1["rate_diff"], gridsize=50, cmap='viridis')
+        ax4.set_title(f"{name1}: Hexbin(layer, rate_diff)")
+        ax4.set_xlabel("Слой")
+        ax4.set_ylabel("rate_diff")
+        cb = plt.colorbar(mappable=ax4.collections[0], ax=ax4)
+        cb.set_label("counts")
+    else:
+        ax4.text(0.5, 0.5, "Нет данных", ha='center', va='center')
+
+    # 5) Hexbin для Model 2
+    ax5 = fig.add_subplot(gs[1, 1])
+    if A2["layer"].size:
+        ax5.hexbin(A2["layer"], A2["rate_diff"], gridsize=50, cmap='viridis')
+        ax5.set_title(f"{name2}: Hexbin(layer, rate_diff)")
+        ax5.set_xlabel("Слой")
+        ax5.set_ylabel("rate_diff")
+        cb = plt.colorbar(mappable=ax5.collections[0], ax=ax5)
+        cb.set_label("counts")
+    else:
+        ax5.text(0.5, 0.5, "Нет данных", ha='center', va='center')
+
+    # 6) lang1_rate vs lang2_rate (оба)
+    ax6 = fig.add_subplot(gs[1, 2])
+    if A1["lang1_rate"].size:
+        x1, y1 = _maybe_subsample(A1["lang1_rate"], A1["lang2_rate"])
+        ax6.scatter(x1, y1, s=6, alpha=0.25, label=f"{name1}", color='#2E86AB')
+    if A2["lang1_rate"].size:
+        x2, y2 = _maybe_subsample(A2["lang1_rate"], A2["lang2_rate"])
+        ax6.scatter(x2, y2, s=6, alpha=0.25, label=f"{name2}", color='#F18F01')
+    lim = ax6.get_xlim()
+    ax6.plot([0, max(1e-9, lim[1])], [0, max(1e-9, lim[1])], 'k--', linewidth=1)
+    ax6.set_title("lang1_rate vs lang2_rate")
+    ax6.set_xlabel("lang1_rate")
+    ax6.set_ylabel("lang2_rate")
+    ax6.legend()
+    ax6.grid(alpha=0.3)
+
+    # 7–8) Бар-чарты по слоям (counts в топ-списке)
+    ax7 = fig.add_subplot(gs[2, 0])
+    ax8 = fig.add_subplot(gs[2, 1])
+
+    if A1["layer"].size:
+        L1, C1 = np.unique(A1["layer"], return_counts=True)
+        ord1 = np.argsort(C1)[::-1][:20]
+        ax7.bar([str(l) for l in L1[ord1]], C1[ord1], color='#2E86AB', alpha=0.8)
+        ax7.set_title(f"{name1}: ТОП-20 слоёв (по количеству)")
+        ax7.set_xlabel("Слой")
+        ax7.set_ylabel("Число нейронов в списке")
+        ax7.tick_params(axis='x', rotation=45)
+        ax7.grid(axis='y', alpha=0.3)
+    else:
+        ax7.text(0.5, 0.5, "Нет данных", ha='center', va='center')
+
+    if A2["layer"].size:
+        L2, C2 = np.unique(A2["layer"], return_counts=True)
+        ord2 = np.argsort(C2)[::-1][:20]
+        ax8.bar([str(l) for l in L2[ord2]], C2[ord2], color='#F18F01', alpha=0.8)
+        ax8.set_title(f"{name2}: ТОП-20 слоёв (по количеству)")
+        ax8.set_xlabel("Слой")
+        ax8.set_ylabel("Число нейронов в списке")
+        ax8.tick_params(axis='x', rotation=45)
+        ax8.grid(axis='y', alpha=0.3)
+    else:
+        ax8.text(0.5, 0.5, "Нет данных", ha='center', va='center')
+
+    # 9) Boxplot rate_diff по моделям
+    ax9 = fig.add_subplot(gs[2, 2])
+    data_box = []
+    labels_box = []
+    if A1["rate_diff"].size:
+        data_box.append(A1["rate_diff"])
+        labels_box.append(name1)
+    if A2["rate_diff"].size:
+        data_box.append(A2["rate_diff"])
+        labels_box.append(name2)
+    if data_box:
+        ax9.boxplot(data_box, labels=labels_box, showfliers=False)
+        ax9.set_title("Boxplot rate_diff")
+        ax9.set_ylabel("rate_diff")
+        ax9.grid(axis='y', alpha=0.3)
+    else:
+        ax9.text(0.5, 0.5, "Нет данных", ha='center', va='center')
+
     plt.tight_layout()
-    plt.savefig(f'{output_prefix}_top_neurons.png', dpi=150, bbox_inches='tight')
-    print(f"Сохранено: {output_prefix}_top_neurons.png")
+    out_path = f"{output_prefix}_top_neurons.png"
+    plt.savefig(out_path, dpi=150, bbox_inches='tight')
+    print(f"Сохранено: {out_path}")
     plt.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Сравнение результатов обнаружения языко-специфичных нейронов для двух моделей"
-    )
-    parser.add_argument("--json1", type=str, required=True, help="Путь к первому JSON файлу")
-    parser.add_argument("--json2", type=str, required=True, help="Путь ко второму JSON файлу")
-    parser.add_argument("--name1", type=str, default="Model 1", help="Имя первой модели для отображения")
-    parser.add_argument("--name2", type=str, default="Model 2", help="Имя второй модели для отображения")
-    parser.add_argument("--output", type=str, default="model_comparison", help="Префикс для выходных файлов")
-    
-    args = parser.parse_args()
-    
     print("=" * 80)
     print("СРАВНЕНИЕ ЯЗЫКО-СПЕЦИФИЧНЫХ НЕЙРОНОВ")
     print("=" * 80)
     
     # Load data
-    data1 = load_json(args.json1)
-    data2 = load_json(args.json2)
+    data1 = load_json(JSON1_PATH)
+    data2 = load_json(JSON2_PATH)
     
     # Extract language names from JSON files
     lang1_name = data1.get('columns', {}).get('lang1', 'lang1')
@@ -534,21 +711,22 @@ def main():
     report_parts = []
     
     # Basic statistics
-    report_parts.append(compare_basic_stats(data1, data2, args.name1, args.name2, lang1_name, lang2_name))
+    report_parts.append(compare_basic_stats(data1, data2, NAME1, NAME2, lang1_name, lang2_name))
     
     # Language-specific neurons
-    report_parts.append(compare_language_specific_neurons(data1, data2, args.name1, args.name2, lang1_name, lang2_name))
+    report_parts.append(compare_language_specific_neurons(data1, data2, NAME1, NAME2, lang1_name, lang2_name))
     
     # Layer distribution
-    layer_report, layer_dist1, layer_dist2 = analyze_layer_distribution(data1, data2, args.name1, args.name2, lang1_name, lang2_name)
+    layer_report, layer_dist1, layer_dist2 = analyze_layer_distribution(data1, data2, NAME1, NAME2, lang1_name, lang2_name)
     report_parts.append(layer_report)
     
-    # Top neurons
-    report_parts.append(analyze_top_neurons(data1, data2, args.name1, args.name2, lang1_name, lang2_name))
-    
     # Overlap analysis
-    overlap_data, overlap_report = calculate_overlap(data1, data2, args.name1, args.name2, lang1_name, lang2_name)
+    overlap_data, overlap_report = calculate_overlap(data1, data2, NAME1, NAME2, lang1_name, lang2_name)
     report_parts.append(overlap_report)
+
+    # NEW: top_lang1_specific_by_rate_diff — без лимита
+    top_report, A1, A2 = analyze_top_lang1_section(data1, data2, NAME1, NAME2)
+    report_parts.append(top_report)
     
     # Combine all reports
     full_report = "\n".join(report_parts)
@@ -557,27 +735,30 @@ def main():
     print(full_report)
     
     # Save to file
-    report_file = f"{args.output}_report.txt"
+    report_file = f"{OUTPUT_PREFIX}_report.txt"
     with open(report_file, 'w', encoding='utf-8') as f:
         f.write(full_report)
     print(f"\n{'-'*80}")
     print(f"Отчёт сохранён: {report_file}")
     
-    # Generate visualizations
+    # Generate visualizations (основные)
     print(f"\nГенерация визуализаций...")
-    create_visualizations(data1, data2, args.name1, args.name2, 
-                         layer_dist1, layer_dist2, overlap_data, args.output, lang1_name, lang2_name)
+    create_visualizations(data1, data2, NAME1, NAME2, 
+                          layer_dist1, layer_dist2, overlap_data, OUTPUT_PREFIX, lang1_name, lang2_name)
+
+    # NEW: Отдельное изображение по top_lang1_specific_by_rate_diff
+    print(f"Генерация визуализаций для top_lang1_specific_by_rate_diff...")
+    create_top_neurons_visualizations(A1, A2, data1, data2, NAME1, NAME2, OUTPUT_PREFIX)
     
     print(f"\n{'='*80}")
     print("ГОТОВО!")
     print(f"{'='*80}")
-    print(f"Файлы созданы:")
+    print("Файлы созданы:")
     print(f"  - {report_file}")
-    print(f"  - {args.output}_comparison.png")
-    print(f"  - {args.output}_detailed.png")
-    print(f"  - {args.output}_top_neurons.png")
+    print(f"  - {OUTPUT_PREFIX}_comparison.png")
+    print(f"  - {OUTPUT_PREFIX}_detailed.png")
+    print(f"  - {OUTPUT_PREFIX}_top_neurons.png")
 
 
 if __name__ == "__main__":
     main()
-
