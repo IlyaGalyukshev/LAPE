@@ -10,8 +10,14 @@ plt.rcParams['figure.figsize'] = (14, 10)
 plt.rcParams['font.size'] = 10
 
 LANGUAGE = "crimean-tatar-cyrillic"
+# LANGUAGE = "tatar"
+LANGUAGE = "crimean-tatar"
+
 MODEL1_NAME = "Tweeties/tweety-tatar-base-7b-2024-v1"
 MODEL2_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
+
+MODEL1_NAME = "ai-forever/mGPT-1.3B-tatar"
+MODEL2_NAME = 'ai-forever/mGPT'
 
 JSON1_PATH = f"activation_TUMLU/results/json/all_{MODEL1_NAME.replace('/', '_')}_{LANGUAGE}.json"
 JSON2_PATH = f"activation_TUMLU/results/json/all_{MODEL2_NAME.replace('/', '_')}_{LANGUAGE}.json"
@@ -284,7 +290,7 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     
     # 1. Overall accuracy comparison
     ax1 = plt.subplot(3, 3, 1)
-    models = [name1[:15], name2[:15]]
+    models = [name1[:20], name2[:20]]
     accuracies = [data1['accuracy']['accuracy'], data2['accuracy']['accuracy']]
     colors = ['#2E86AB', '#F18F01']
     bars = ax1.bar(models, accuracies, color=colors, alpha=0.8, edgecolor='black')
@@ -307,8 +313,8 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     accs1 = [subjects1.get(s, {}).get('accuracy', 0) for s in all_subjects]
     accs2 = [subjects2.get(s, {}).get('accuracy', 0) for s in all_subjects]
     
-    ax2.bar(x - width/2, accs1, width, label=name1[:15], alpha=0.8, color='#2E86AB')
-    ax2.bar(x + width/2, accs2, width, label=name2[:15], alpha=0.8, color='#F18F01')
+    ax2.bar(x - width/2, accs1, width, label=name1[:20], alpha=0.8, color='#2E86AB')
+    ax2.bar(x + width/2, accs2, width, label=name2[:20], alpha=0.8, color='#F18F01')
     ax2.set_xlabel('Категория')
     ax2.set_ylabel('Accuracy')
     ax2.set_title('Точность по категориям')
@@ -351,8 +357,8 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     ax6 = plt.subplot(3, 3, 6)
     min_layers = min(len(layer_dist1), len(layer_dist2))
     x = np.arange(min_layers)
-    ax6.plot(x, layer_dist1[:min_layers], 'o-', label=name1[:15], linewidth=2, markersize=4, color='#2E86AB')
-    ax6.plot(x, layer_dist2[:min_layers], 's-', label=name2[:15], linewidth=2, markersize=4, color='#F18F01')
+    ax6.plot(x, layer_dist1[:min_layers], 'o-', label=name1[:20], linewidth=2, markersize=4, color='#2E86AB')
+    ax6.plot(x, layer_dist2[:min_layers], 's-', label=name2[:20], linewidth=2, markersize=4, color='#F18F01')
     ax6.set_xlabel('Слой')
     ax6.set_ylabel('Количество нейронов')
     ax6.set_title('Сравнение моделей по слоям')
@@ -372,8 +378,8 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     ]
     x = np.arange(len(categories))
     width = 0.35
-    ax7.bar(x - width/2, model1_vals, width, label=name1[:15], alpha=0.8, color='#2E86AB')
-    ax7.bar(x + width/2, model2_vals, width, label=name2[:15], alpha=0.8, color='#F18F01')
+    ax7.bar(x - width/2, model1_vals, width, label=name1[:20], alpha=0.8, color='#2E86AB')
+    ax7.bar(x + width/2, model2_vals, width, label=name2[:20], alpha=0.8, color='#F18F01')
     ax7.set_ylabel('Количество нейронов')
     ax7.set_title('Сравнение нейронов')
     ax7.set_xticks(x)
@@ -411,8 +417,8 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
         data2['accuracy']['valid_predictions']
     ]
     x = np.arange(len(categories))
-    ax9.bar(x - width/2, model1_vals, width, label=name1[:15], alpha=0.8, color='#2E86AB')
-    ax9.bar(x + width/2, model2_vals, width, label=name2[:15], alpha=0.8, color='#F18F01')
+    ax9.bar(x - width/2, model1_vals, width, label=name1[:20], alpha=0.8, color='#2E86AB')
+    ax9.bar(x + width/2, model2_vals, width, label=name2[:20], alpha=0.8, color='#F18F01')
     ax9.set_ylabel('Количество')
     ax9.set_title('Сравнение ответов')
     ax9.set_xticks(x)
@@ -442,9 +448,9 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     
     # Cumulative distribution
     axes[0, 1].plot(range(num_layers), np.cumsum(layer_dist1[:num_layers]), 
-                    'o-', label=name1[:15], linewidth=2, color='#2E86AB')
+                    'o-', label=name1[:20], linewidth=2, color='#2E86AB')
     axes[0, 1].plot(range(num_layers), np.cumsum(layer_dist2[:num_layers]), 
-                    's-', label=name2[:15], linewidth=2, color='#F18F01')
+                    's-', label=name2[:20], linewidth=2, color='#F18F01')
     axes[0, 1].set_xlabel('Слой')
     axes[0, 1].set_ylabel('Кумулятивное количество')
     axes[0, 1].set_title('Кумулятивное распределение по слоям')
@@ -455,9 +461,9 @@ def create_visualizations(data1: Dict, data2: Dict, name1: str, name2: str,
     pct_model1 = 100 * layer_dist1[:num_layers] / data1['intermediate_size']
     pct_model2 = 100 * layer_dist2[:num_layers] / data2['intermediate_size']
     
-    axes[1, 0].plot(range(num_layers), pct_model1, 'o-', label=name1[:15], 
+    axes[1, 0].plot(range(num_layers), pct_model1, 'o-', label=name1[:20], 
                     linewidth=2, markersize=4, color='#2E86AB')
-    axes[1, 0].plot(range(num_layers), pct_model2, 's-', label=name2[:15], 
+    axes[1, 0].plot(range(num_layers), pct_model2, 's-', label=name2[:20], 
                     linewidth=2, markersize=4, color='#F18F01')
     axes[1, 0].set_xlabel('Слой')
     axes[1, 0].set_ylabel('% от intermediate_size')

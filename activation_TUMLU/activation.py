@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Tuple
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-LANGUAGE = "crimean-tatar-cyrillic"
+LANGUAGE = "crimean-tatar"
 
 TEST_PROMPTS = {
     "crimean-tatar": """Sual: {question}\n\n1) {choice1}\n2) {choice2}\n3) {choice3}\n4) {choice4}\n\nDoğru cevap: """,
@@ -17,14 +17,16 @@ TEST_PROMPTS = {
     "tatar": """Сорау: {question}\n\n1) {choice1}\n2) {choice2}\n3) {choice3}\n4) {choice4}\n\nДөрес җавап: """,
 }
 BENCHMARK_PATH = f"data/TUMLU/{LANGUAGE}/all.jsonl" 
-MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
+# MODEL_NAME = "mistralai/Mistral-7B-Instruct-v0.2"
 # MODEL_NAME = "Tweeties/tweety-tatar-base-7b-2024-v1"
+MODEL_NAME = "ai-forever/mGPT-1.3B-tatar"
+MODEL_NAME = 'ai-forever/mGPT'
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 BATCH_SIZE_COUNT = 4        # батч для подсчёта активаций на входных текстах
 MAX_LENGTH_COUNT = 512      # триммим только ПРИ СЧЁТЕ АКТИВАЦИЙ (не при генерации)
 GEN_BATCH_SIZE = 4
-GEN_MAX_NEW_TOKENS = 8     # генерация не ограничена выбором; обычный decode
+GEN_MAX_NEW_TOKENS = 8      # генерация не ограничена выбором; обычный decode
 GEN_TEMPERATURE = 0.0       # детерминированный гриди по умолчанию
 GEN_TOP_P = 1.0
 SEED = 42
@@ -107,25 +109,23 @@ def parse_pred_letter(text: str, choices: List[str] = None) -> str:
     # Стратегия 1: найти цифру 1-4 после ключевых слов ответа
     # Поддерживаем все три языка:
     # - "Дөрес җавап:" (tatar)
-    # - "Doğru cevap:" (crimean-tatar latin)
-    # - "Догъру джевап:" (crimean-tatar cyrillic)
+    # - "Doğru cevap:" (crimean Tatar Latin)
+    # - "Догъру джевап:" (crimean Tatar Cyrillic)
     answer_patterns = [
         r"Дөрес җавап:\s*(\d)",      # Tatar
-        r"Doğru cevap:\s*(\d)",        # Crimean Tatar (Latin)
-        r"Догъру джевап:\s*(\d)",     # Crimean Tatar (Cyrillic)
+        r"Doğru cevap:\s*(\d)",      # Crimean Tatar (Latin)
+        r"Догъру джевап:\s*(\d)",    # Crimean Tatar (Cyrillic)
     ]
     
     for pattern in answer_patterns:
         find_digit = re.search(pattern, text, re.IGNORECASE)
         if find_digit:
             digit = int(find_digit.group(1))
-            # Преобразуем 1-4 в A-D (0-3 индексы)
             if 1 <= digit <= 4:
                 return IDX2LETTER.get(digit - 1, None)
     
     # Стратегия 2: если есть варианты ответов, попробуем найти совпадение текста
     if choices:
-        # Извлекаем текст после ключевых слов ответа
         text_patterns = [
             r"Дөрес җавап:\s*(.+)",
             r"Doğru cevap:\s*(.+)",
@@ -140,15 +140,10 @@ def parse_pred_letter(text: str, choices: List[str] = None) -> str:
                 break
         
         if answer_text:
-            # Удаляем возможные префиксы типа "1) ", "2) " и т.д.
             answer_text = re.sub(r"^\d+\)\s*", "", answer_text)
-            # Берем только первую строку (до \n)
             answer_text = answer_text.split('\n')[0].strip()
-            
-            # Пробуем найти совпадение с вариантами
             for idx, choice in enumerate(choices):
                 choice_clean = choice.strip()
-                # Проверяем точное совпадение или начало
                 if answer_text == choice_clean:
                     return IDX2LETTER.get(idx, None)
                 if len(answer_text) > 10 and (answer_text.startswith(choice_clean) or choice_clean.startswith(answer_text[:20])):
@@ -158,25 +153,48 @@ def parse_pred_letter(text: str, choices: List[str] = None) -> str:
 
 
 def detect_mlp_kind(mlp) -> str:
+    # Mistral/LLaMA-style gated MLP
     if hasattr(mlp, "gate_proj") and hasattr(mlp, "up_proj") and hasattr(mlp, "down_proj"):
-        return "gated"  # Mistral/LLaMA
+        return "gated"
+    # BLOOM-style MLP
     if hasattr(mlp, "dense_h_to_4h") and hasattr(mlp, "dense_4h_to_h"):
         return "bloom"
-    raise RuntimeError("Неизвестный тип MLP-модуля (ожидался gated или bloom).")
+    # GPT-2 style MLP (as in ai-forever/mGPT-1.3B-tatar)
+    if hasattr(mlp, "c_fc") and hasattr(mlp, "c_proj") and hasattr(mlp, "act"):
+        return "gpt2"
+    raise RuntimeError("Неизвестный тип MLP-модуля (ожидался gated, bloom или gpt2).")
 
 
 def get_layers_and_intermediate(model) -> Tuple[List[Any], int]:
+    # LLaMA/Mistral
     if hasattr(model, "model") and hasattr(model.model, "layers"):
         layers = list(model.model.layers)
         first_mlp = layers[0].mlp
         kind = detect_mlp_kind(first_mlp)
-        inter = first_mlp.gate_proj.out_features if kind == "gated" else first_mlp.dense_h_to_4h.out_features
+        if kind == "gated":
+            inter = first_mlp.gate_proj.out_features
+        elif kind == "bloom":
+            inter = first_mlp.dense_h_to_4h.out_features
+        elif kind == "gpt2":
+            # transformers Conv1D weight has shape (in_features, out_features)
+            inter = int(first_mlp.c_fc.weight.shape[1])
+        else:
+            raise RuntimeError("Не удалось определить intermediate_size.")
         return layers, inter
+
+    # GPT-2/BLOOM families expose .transformer.h
     elif hasattr(model, "transformer") and hasattr(model.transformer, "h"):
         layers = list(model.transformer.h)
         first_mlp = layers[0].mlp
         kind = detect_mlp_kind(first_mlp)
-        inter = first_mlp.gate_proj.out_features if kind == "gated" else first_mlp.dense_h_to_4h.out_features
+        if kind == "gated":
+            inter = first_mlp.gate_proj.out_features
+        elif kind == "bloom":
+            inter = first_mlp.dense_h_to_4h.out_features
+        elif kind == "gpt2":
+            inter = int(first_mlp.c_fc.weight.shape[1])
+        else:
+            raise RuntimeError("Не удалось определить intermediate_size.")
         return layers, inter
     else:
         raise RuntimeError("Не удалось найти список слоёв модели (.model.layers или .transformer.h).")
@@ -203,7 +221,7 @@ def make_patchers_single_lang(layers: List[Any], over_zero_ref: Dict[str, torch.
                 y = down(a * u)  # (B, L, H)
                 return y
 
-        else:  # bloom
+        elif kind == "bloom":
             d14h, d4h1 = mlp.dense_h_to_4h, mlp.dense_4h_to_h
             gelu = mlp.gelu_impl
 
@@ -215,6 +233,19 @@ def make_patchers_single_lang(layers: List[Any], over_zero_ref: Dict[str, torch.
                     pos = (a > 0).sum(dim=(0, 1))
                     ctr[li].add_(pos.to(ctr.dtype))
                 y = d4h1(a)
+                return y
+
+        else:  # GPT-2 style (mGPT)
+            c_fc, c_proj, act = mlp.c_fc, mlp.c_proj, mlp.act
+
+            def fwd(x, c_fc=c_fc, c_proj=c_proj, act=act, li=li):
+                z = c_fc(x)     # (B, L, I)
+                a = act(z)      # (B, L, I)
+                ctr = over_zero_ref["tensor"]
+                if ctr is not None:
+                    pos = (a > 0).sum(dim=(0, 1))  # (I,)
+                    ctr[li].add_(pos.to(ctr.dtype))
+                y = c_proj(a)   # (B, L, H)
                 return y
 
         patched.append((mlp, mlp.forward, fwd))
