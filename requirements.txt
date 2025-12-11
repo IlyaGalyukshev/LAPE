@@ -2,3 +2,4 @@ torch
 vllm
 transformers
 pandas
+lm-polygraph

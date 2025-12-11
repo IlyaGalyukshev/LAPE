@@ -1,3 +1,7 @@
 venv/
 .DS_Store
 *.yml
+*.log
+__pycache__/
+*.out
+*.ipynb
