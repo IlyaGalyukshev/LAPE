@@ -6,6 +6,7 @@ import os
 import json
 import csv
 import math
+import gc
 from datetime import datetime
 from typing import Dict, Any, List, Tuple
 
@@ -768,11 +769,20 @@ def main() -> None:
                     )
                     log("")
 
+                    # Periodic memory cleanup every 10 questions
+                    if question_idx % 10 == 0:
+                        gc.collect()
+                        torch.cuda.empty_cache()
+
         st = stats_per_lang[lang]
         log(
             f"[{lang}] done: n_examples={st['n_examples']}, used_tokens={st['used_tokens']}"
         )
         log("")
+
+        # Clean up memory after each language
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # ---------- Save summary
     output_path = os.path.join(OUTPUT_DIR, "rauq_focus_summary.tsv")

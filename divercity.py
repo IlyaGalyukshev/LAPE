@@ -6,6 +6,7 @@ import os
 import json
 import csv
 import math
+import gc
 from datetime import datetime
 from typing import List, Dict, Tuple, Any
 
@@ -704,6 +705,11 @@ def main() -> None:
                     f"(samples_n={SAMPLES_N})"
                 )
 
+                # Periodic memory cleanup every 10 questions
+                if question_idx % 10 == 0:
+                    gc.collect()
+                    torch.cuda.empty_cache()
+
         checkpoint_f.close()
 
         stats = stats_per_lang[lang]
@@ -736,6 +742,10 @@ def main() -> None:
             f"avg EigValLaplacian={eig_avg:.6f}, avg Eccentricity={ecc_avg:.6f}"
         )
         log("")
+
+        # Clean up memory after each language
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # ---------- Save summary
     output_path = os.path.join(OUTPUT_DIR, "graph_metrics_summary.tsv")

@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 import os
 import json
 import csv
+import gc
 import torch
 from datetime import datetime
 from typing import Dict, Any, List
@@ -389,14 +390,18 @@ def main() -> None:
                             f"{tokens_used}/{common_tokens} tokens "
                             f"({tokens_used / common_tokens * 100:.1f}%)"
                         )
+                        # Periodic memory cleanup every 10 questions
+                        gc.collect()
+                        torch.cuda.empty_cache()
 
             token_counts[lang_idx] = tokens_used
             log_progress(
                 f"  - Done: {n_questions} questions, {tokens_used}/{common_tokens} tokens"
             )
 
-            if has_cuda:
-                torch.cuda.empty_cache()
+            # Clean up memory after each language
+            gc.collect()
+            torch.cuda.empty_cache()
 
             # Save checkpoint after each language
             completed_lang_indices.append(lang_idx)
