@@ -191,8 +191,12 @@ def main() -> None:
     # -----------------------------
     model_type = model.config.model_type
 
-    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
+    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3_text"):
         layers = model.model.layers
+    elif model_type == "gemma3":
+        # gemma3 multimodal: model.model is Gemma3Model (vision+text wrapper),
+        # layers are inside the language_model's text model
+        layers = model.model.language_model.model.layers
     elif model_type == "gpt2":
         layers = model.transformer.h
     elif model_type == "bloom":
@@ -207,6 +211,7 @@ def main() -> None:
     if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.gate_proj.out_features
+
     elif model_type == "gpt2":
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.c_fc.weight.shape[1]
@@ -232,6 +237,7 @@ def main() -> None:
     if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
 
         def make_gate_hook(layer_idx, act_fn):
+
             def hook(module, input, output):
                 nonlocal current_lang_index
                 activation = act_fn(output.to(torch.float32))
