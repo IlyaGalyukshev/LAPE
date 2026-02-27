@@ -438,7 +438,7 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
     if eigvecs_kept.size == 0:
         return float("nan")
 
-    C = eigvecs_kept.T @ eigvecs_kept
+    C = eigvecs_kept @ eigvecs_kept.T
     C_sim = np.maximum(C, 0.0)
 
     D_ecc = np.where(C_sim > 0.0, -np.log(C_sim), np.inf)
