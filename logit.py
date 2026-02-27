@@ -196,16 +196,16 @@ def compute_metrics_single(
     gen_len: int,
 ) -> Dict[str, float]:
     """
-    Metrics (lm-polygraph-compatible definitions):
-      - Perplexity: -mean(log_likelihoods)
-      - MaximumSequenceProbability: -sum(log_likelihoods)
-      - MeanTokenEntropy: mean(entropy)
+    Metrics:
+      - MeanTokenNLL: -mean(log_likelihoods)        — mean negative log-likelihood per token
+      - SequenceNLL: -sum(log_likelihoods)           — total negative log-likelihood of the sequence
+      - MeanTokenEntropy: mean(entropy)              — mean entropy of predicted distributions
     where log_likelihoods are log p(y_i | y_<i, x) for generated tokens.
     """
     if gen_len <= 0 or prompt_len <= 0:
         return {
-            "Perplexity": float("nan"),
-            "MaximumSequenceProbability": float("nan"),
+            "MeanTokenNLL": float("nan"),
+            "SequenceNLL": float("nan"),
             "MeanTokenEntropy": float("nan"),
         }
 
@@ -235,8 +235,8 @@ def compute_metrics_single(
 
     if pred_start < 0 or pred_end <= pred_start:
         return {
-            "Perplexity": float("nan"),
-            "MaximumSequenceProbability": float("nan"),
+            "MeanTokenNLL": float("nan"),
+            "SequenceNLL": float("nan"),
             "MeanTokenEntropy": float("nan"),
         }
 
@@ -250,10 +250,10 @@ def compute_metrics_single(
 
     logp_np = logp_t.detach().cpu().numpy().astype(np.float64)
 
-    # Perplexity = -mean(log_likelihoods)
-    perplexity_val = float(-np.mean(logp_np))
-    # MaximumSequenceProbability = -sum(log_likelihoods)
-    msp_val = float(-np.sum(logp_np))
+    # MeanTokenNLL = -mean(log_likelihoods)
+    mean_nll_val = float(-np.mean(logp_np))
+    # SequenceNLL = -sum(log_likelihoods)
+    seq_nll_val = float(-np.sum(logp_np))
 
     # Entropy per token: -sum p log p
     p_all = torch.exp(logp_all)
@@ -262,8 +262,8 @@ def compute_metrics_single(
     mean_entropy_val = float(np.mean(entropy_np))
 
     return {
-        "Perplexity": perplexity_val,
-        "MaximumSequenceProbability": msp_val,
+        "MeanTokenNLL": mean_nll_val,
+        "SequenceNLL": seq_nll_val,
         "MeanTokenEntropy": mean_entropy_val,
     }
 
@@ -359,8 +359,8 @@ def main() -> None:
         lang: {
             "n_examples": 0,
             "used_tokens": 0,
-            "Perplexity_values": [],
-            "MaximumSequenceProbability_values": [],
+            "MeanTokenNLL_values": [],
+            "SequenceNLL_values": [],
             "MeanTokenEntropy_values": [],
         }
         for lang in LANGS
@@ -429,9 +429,9 @@ def main() -> None:
 
                 st = stats_per_lang[lang]
                 st["n_examples"] += 1
-                st["Perplexity_values"].append(float(m["Perplexity"]))
-                st["MaximumSequenceProbability_values"].append(
-                    float(m["MaximumSequenceProbability"])
+                st["MeanTokenNLL_values"].append(float(m["MeanTokenNLL"]))
+                st["SequenceNLL_values"].append(
+                    float(m["SequenceNLL"])
                 )
                 st["MeanTokenEntropy_values"].append(float(m["MeanTokenEntropy"]))
 
@@ -440,9 +440,9 @@ def main() -> None:
 
                 log(
                     f"[{lang}] METRICS: "
-                    f"Perplexity={m['Perplexity']:.6f}, "
-                    f"MaxSeqProb={m['MaximumSequenceProbability']:.6f}, "
-                    f"MeanTokEntropy={m['MeanTokenEntropy']:.6f}"
+                    f"MeanTokenNLL={m['MeanTokenNLL']:.6f}, "
+                    f"SequenceNLL={m['SequenceNLL']:.6f}, "
+                    f"MeanTokenEntropy={m['MeanTokenEntropy']:.6f}"
                 )
                 log("")
 
@@ -455,7 +455,7 @@ def main() -> None:
     # ---------- Save summary
     model_id_safe = safe_model_id(MODEL_ID)
     output_path = os.path.join(
-        OUTPUT_DIR, f"{model_id_safe}_ppl_msp_entropy_summary.tsv"
+        OUTPUT_DIR, f"{model_id_safe}_nll_entropy_summary.tsv"
     )
     log(f"Saving aggregated metrics to {output_path}")
 
@@ -466,10 +466,10 @@ def main() -> None:
                 "language",
                 "n_examples",
                 "used_tokens",
-                "Perplexity_mean",
-                "Perplexity_std",
-                "MaximumSequenceProbability_mean",
-                "MaximumSequenceProbability_std",
+                "MeanTokenNLL_mean",
+                "MeanTokenNLL_std",
+                "SequenceNLL_mean",
+                "SequenceNLL_std",
                 "MeanTokenEntropy_mean",
                 "MeanTokenEntropy_std",
             ]
@@ -477,8 +477,8 @@ def main() -> None:
 
         for lang in LANGS:
             st = stats_per_lang[lang]
-            ppl_m, ppl_s = mean_and_std(st["Perplexity_values"])
-            msp_m, msp_s = mean_and_std(st["MaximumSequenceProbability_values"])
+            nll_m, nll_s = mean_and_std(st["MeanTokenNLL_values"])
+            seq_m, seq_s = mean_and_std(st["SequenceNLL_values"])
             ent_m, ent_s = mean_and_std(st["MeanTokenEntropy_values"])
 
             def fmt(x: float) -> str:
@@ -489,17 +489,17 @@ def main() -> None:
                     lang,
                     st["n_examples"],
                     st["used_tokens"],
-                    fmt(ppl_m),
-                    fmt(ppl_s),
-                    fmt(msp_m),
-                    fmt(msp_s),
+                    fmt(nll_m),
+                    fmt(nll_s),
+                    fmt(seq_m),
+                    fmt(seq_s),
                     fmt(ent_m),
                     fmt(ent_s),
                 ]
             )
 
     stats_json_path = os.path.join(
-        OUTPUT_DIR, f"{model_id_safe}_ppl_msp_entropy_stats_per_lang.json"
+        OUTPUT_DIR, f"{model_id_safe}_nll_entropy_stats_per_lang.json"
     )
     log(f"Saving raw stats_per_lang to: {stats_json_path}")
     with open(stats_json_path, "w", encoding="utf-8") as f:
