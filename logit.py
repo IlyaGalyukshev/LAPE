@@ -20,7 +20,7 @@ hf_logging.set_verbosity_error()
 # -----------------------------
 # CONFIG
 # -----------------------------
-MODEL_ID = "google/gemma-3-12b-it"
+MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
 MODEL_PATH = "/hf_models"
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
