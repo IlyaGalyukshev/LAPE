@@ -151,6 +151,16 @@ def main() -> None:
     model.eval()
     log_progress("Model loaded and ready!")
 
+    # DEBUG: print model structure to determine correct layer access path
+    print(model)
+    print(f"\nmodel_type = {model.config.model_type}")
+    print(f"type(model) = {type(model)}")
+    if hasattr(model, 'model'):
+        print(f"type(model.model) = {type(model.model)}")
+        if hasattr(model.model, 'language_model'):
+            print(f"type(model.model.language_model) = {type(model.model.language_model)}")
+            print(f"dir(model.model.language_model) = {[a for a in dir(model.model.language_model) if not a.startswith('_')]}")
+
     # -----------------------------
     # Pass 1: count tokens per language and find minimum (same notion as your original)
     # tokenization uses: tokenizer(text, add_special_tokens=True)
