@@ -62,6 +62,7 @@ PROMPTS = {
     "uzbek-cyrillic": """Савол: {question}\n{choices}\n\nЖавобни битта гап билан ёзинг.\nЖавоб: """,
 }
 
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -82,10 +83,12 @@ def format_choices(choices: list) -> str:
             out.append(f"{labels[i]}. {c}")
     return "\n".join(out)
 
+
 def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
     formatted_choices = format_choices(obj["choices"])
     prompt_template = PROMPTS[lang]
     return prompt_template.format(question=obj["question"], choices=formatted_choices)
+
 
 # -----------------------------
 # LAPE logic (DO NOT CHANGE) — rewritten to job-style paths + local model loading
@@ -155,11 +158,15 @@ def main() -> None:
     print(model)
     print(f"\nmodel_type = {model.config.model_type}")
     print(f"type(model) = {type(model)}")
-    if hasattr(model, 'model'):
+    if hasattr(model, "model"):
         print(f"type(model.model) = {type(model.model)}")
-        if hasattr(model.model, 'language_model'):
-            print(f"type(model.model.language_model) = {type(model.model.language_model)}")
-            print(f"dir(model.model.language_model) = {[a for a in dir(model.model.language_model) if not a.startswith('_')]}")
+        if hasattr(model.model, "language_model"):
+            print(
+                f"type(model.model.language_model) = {type(model.model.language_model)}"
+            )
+            print(
+                f"dir(model.model.language_model) = {[a for a in dir(model.model.language_model) if not a.startswith('_')]}"
+            )
 
     # -----------------------------
     # Pass 1: count tokens per language and find minimum (same notion as your original)
@@ -204,9 +211,7 @@ def main() -> None:
     if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3_text"):
         layers = model.model.layers
     elif model_type == "gemma3":
-        # gemma3 multimodal: model.model is Gemma3Model (vision+text wrapper),
-        # layers are inside the language_model's text model
-        layers = model.model.language_model.model.layers
+        layers = model.model.language_model.layers
     elif model_type == "gpt2":
         layers = model.transformer.h
     elif model_type == "bloom":
@@ -315,12 +320,16 @@ def main() -> None:
         over_zero.copy_(ckpt["over_zero"])
         token_counts.copy_(ckpt["token_counts"])
         completed_lang_indices = ckpt["completed_lang_indices"]
-        log_progress(f"Resumed: {len(completed_lang_indices)} languages already completed")
+        log_progress(
+            f"Resumed: {len(completed_lang_indices)} languages already completed"
+        )
 
     with torch.no_grad():
         for lang_idx, lang in enumerate(LANGS):
             if lang_idx in completed_lang_indices:
-                log_progress(f"\n[{lang_idx+1}/{len(LANGS)}] Skipping {lang} (already completed)")
+                log_progress(
+                    f"\n[{lang_idx+1}/{len(LANGS)}] Skipping {lang} (already completed)"
+                )
                 continue
 
             current_lang_index = lang_idx
@@ -416,7 +425,9 @@ def main() -> None:
                 },
                 checkpoint_path,
             )
-            log_progress(f"Checkpoint saved ({len(completed_lang_indices)}/{len(LANGS)} languages)")
+            log_progress(
+                f"Checkpoint saved ({len(completed_lang_indices)}/{len(LANGS)} languages)"
+            )
 
     log_progress("\nActivation collection completed!")
     if has_cuda:
@@ -607,23 +618,27 @@ def main() -> None:
 
     with open(summary_path, "w", encoding="utf-8", newline="") as out_f:
         writer = csv.writer(out_f, delimiter="\t")
-        writer.writerow([
-            "language",
-            "tokens_used",
-            "lang_specific_neurons",
-            "lang_specific_neurons_pct",
-        ])
+        writer.writerow(
+            [
+                "language",
+                "tokens_used",
+                "lang_specific_neurons",
+                "lang_specific_neurons_pct",
+            ]
+        )
         for lang_id, lang in enumerate(LANGS):
             neuron_count = sum(
                 len(layer_neurons) for layer_neurons in final_lang_neurons[lang_id]
             )
             percentage = (neuron_count / total_neurons) * 100
-            writer.writerow([
-                lang,
-                int(token_counts[lang_id].item()),
-                neuron_count,
-                f"{percentage:.3f}",
-            ])
+            writer.writerow(
+                [
+                    lang,
+                    int(token_counts[lang_id].item()),
+                    neuron_count,
+                    f"{percentage:.3f}",
+                ]
+            )
 
     # Remove checkpoint after successful save
     if os.path.exists(checkpoint_path):
