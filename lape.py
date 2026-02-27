@@ -569,9 +569,9 @@ def main() -> None:
         "model_path": MODEL_PATH,
         "model_type": model_type,
         "num_layers": int(num_layers),
-        "hidden_size": int(model.config.hidden_size),
+        "hidden_size": int(model.config.text_config.hidden_size if model_type == "gemma3" else model.config.hidden_size),
         "intermediate_size": int(intermediate_size),
-        "vocab_size": int(model.config.vocab_size),
+        "vocab_size": int(model.config.text_config.vocab_size if model_type == "gemma3" else model.config.vocab_size),
         "num_parameters": int(param_count),
     }
 
