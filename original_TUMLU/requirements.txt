@@ -1,9 +1,0 @@
-anthropic
-openai
-python-dotenv
-tqdm
-ipykernel
-beautifulsoup4
-datasets
-black
-google-generativeai
