@@ -22,8 +22,7 @@ MODEL_ID = "google/gemma-3-12b-it"
 MODEL_PATH = "/hf_models"  # mounted from model_registry
 
 DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
-OUTPUT_DIR = "/work/benchmarks/uncertainty_metrics"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 # Generation parameters for sampling (affects LexicalSimilarity/DegMat/EigValLaplacian/Eccentricity)
 SAMPLES_N = 10
@@ -467,6 +466,27 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
 
 
 # -----------------------------
+# Checkpoint helpers
+# -----------------------------
+def load_existing_results(path: str) -> Dict[int, Dict[str, Any]]:
+    results: Dict[int, Dict[str, Any]] = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    idx = rec.get("index")
+                    if idx is not None:
+                        results[idx] = rec
+        except Exception as e:
+            log(f"Warning: Could not load existing results from {path}: {e}")
+    return results
+
+
+# -----------------------------
 # Aggregation helpers
 # -----------------------------
 def mean_and_std(values: List[float]) -> Tuple[float, float]:
@@ -492,6 +512,10 @@ def main() -> None:
         torch.set_float32_matmul_precision("high")
     except Exception:
         pass
+
+    model_id_safe = safe_model_id(MODEL_ID)
+    OUTPUT_DIR = os.path.join(OUTPUT_BASE, model_id_safe, "graph_metrics")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     log("=" * 80)
     log(f"Processing model: {MODEL_ID}")
@@ -584,10 +608,22 @@ def main() -> None:
         log(f"[{lang}] processing {path}")
         log(f"[{lang}] target token budget: {common_tokens}")
 
+        checkpoint_path = os.path.join(
+            OUTPUT_DIR, f"{lang}_graph_metrics.jsonl"
+        )
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        existing_results = load_existing_results(checkpoint_path)
+        log(f"[{lang}] Found {len(existing_results)} existing results, will skip those")
+
         used_tokens = 0
+        question_idx = 0
         buffer_model_inputs: List[str] = []
         buffer_user_prompts: List[str] = []
         buffer_token_lens: List[int] = []
+        buffer_question_indices: List[int] = []
+
+        # Open checkpoint file for appending new results
+        checkpoint_f = open(checkpoint_path, "a", encoding="utf-8")
 
         def flush_buffer():
             nonlocal used_tokens
@@ -637,6 +673,19 @@ def main() -> None:
                 used_tokens += tok
                 stats["used_tokens"] = used_tokens
 
+                # Save checkpoint
+                rec = {
+                    "index": buffer_question_indices[idx],
+                    "language": lang,
+                    "text_tokens": tok,
+                    "lexical_similarity": float(lex_u),
+                    "degmat": float(deg_u),
+                    "eigvallaplacian": float(eig_u),
+                    "eccentricity": float(ecc_u),
+                }
+                checkpoint_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                checkpoint_f.flush()
+
                 log(
                     f"[{lang}] METRICS: LexSim={lex_u:.6f}, DegMat={deg_u:.6f}, "
                     f"EigValLaplacian={eig_u:.6f}, Eccentricity={ecc_u:.6f} "
@@ -646,6 +695,7 @@ def main() -> None:
             buffer_model_inputs.clear()
             buffer_user_prompts.clear()
             buffer_token_lens.clear()
+            buffer_question_indices.clear()
 
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -656,16 +706,14 @@ def main() -> None:
                 if not line:
                     continue
 
+                question_idx += 1
+
                 obj = json.loads(line)
                 user_prompt = make_user_prompt(lang, obj)
                 model_input = apply_chat_if_available(tokenizer, user_prompt)
 
                 token_ids = tokenizer.encode(model_input, add_special_tokens=False)
                 text_tokens = len(token_ids)
-
-                log(
-                    f"[{lang}] processing example: {text_tokens} tokens, cumulative: {used_tokens}/{common_tokens}"
-                )
 
                 # If adding this example would exceed budget, flush what we have and stop
                 if (
@@ -675,9 +723,27 @@ def main() -> None:
                     flush_buffer()
                     break
 
+                # Resume: restore from checkpoint
+                if question_idx in existing_results:
+                    rec = existing_results[question_idx]
+                    stats = stats_per_lang[lang]
+                    stats["n_examples"] += 1
+                    stats["lexical_similarity_values"].append(float(rec["lexical_similarity"]))
+                    stats["degmat_values"].append(float(rec["degmat"]))
+                    stats["eigvallaplacian_values"].append(float(rec["eigvallaplacian"]))
+                    stats["eccentricity_values"].append(float(rec["eccentricity"]))
+                    used_tokens += text_tokens
+                    stats["used_tokens"] = used_tokens
+                    continue
+
+                log(
+                    f"[{lang}] [{question_idx}] processing example: {text_tokens} tokens, cumulative: {used_tokens}/{common_tokens}"
+                )
+
                 buffer_user_prompts.append(user_prompt)
                 buffer_model_inputs.append(model_input)
                 buffer_token_lens.append(text_tokens)
+                buffer_question_indices.append(question_idx)
 
                 # flush by batch size
                 if len(buffer_model_inputs) >= BATCH_SIZE:
@@ -686,6 +752,8 @@ def main() -> None:
             # flush remaining
             if used_tokens < common_tokens:
                 flush_buffer()
+
+        checkpoint_f.close()
 
         stats = stats_per_lang[lang]
         lex_avg = (
@@ -719,8 +787,7 @@ def main() -> None:
         log("")
 
     # ---------- Save summary
-    model_id_safe = safe_model_id(MODEL_ID)
-    output_path = os.path.join(OUTPUT_DIR, f"{model_id_safe}_graph_metrics_summary.tsv")
+    output_path = os.path.join(OUTPUT_DIR, "graph_metrics_summary.tsv")
     log(f"Saving aggregated metrics to {output_path}")
 
     with open(output_path, "w", encoding="utf-8", newline="") as out_f:
@@ -738,6 +805,7 @@ def main() -> None:
                 "eigvallaplacian_std",
                 "eccentricity_mean",
                 "eccentricity_std",
+                "eccentricity_infs_cnt",
             ]
         )
 
@@ -746,7 +814,11 @@ def main() -> None:
             lex_m, lex_s = mean_and_std(st["lexical_similarity_values"])
             deg_m, deg_s = mean_and_std(st["degmat_values"])
             eig_m, eig_s = mean_and_std(st["eigvallaplacian_values"])
-            ecc_m, ecc_s = mean_and_std(st["eccentricity_values"])
+
+            ecc_vals = st["eccentricity_values"]
+            ecc_infs = sum(1 for v in ecc_vals if v is not None and math.isinf(v))
+            ecc_finite = [v for v in ecc_vals if v is not None and math.isfinite(v)]
+            ecc_m, ecc_s = mean_and_std(ecc_finite)
 
             writer.writerow(
                 [
@@ -761,12 +833,11 @@ def main() -> None:
                     f"{eig_s:.6f}" if not math.isnan(eig_s) else "nan",
                     f"{ecc_m:.6f}" if not math.isnan(ecc_m) else "nan",
                     f"{ecc_s:.6f}" if not math.isnan(ecc_s) else "nan",
+                    ecc_infs,
                 ]
             )
 
-    stats_json_path = os.path.join(
-        OUTPUT_DIR, f"{model_id_safe}_graph_metrics_stats_per_lang.json"
-    )
+    stats_json_path = os.path.join(OUTPUT_DIR, "graph_metrics_stats_per_lang.json")
     log(f"Saving raw stats_per_lang to: {stats_json_path}")
     with open(stats_json_path, "w", encoding="utf-8") as f:
         json.dump(stats_per_lang, f, indent=2, ensure_ascii=False)

@@ -5,6 +5,7 @@ warnings.filterwarnings("ignore")
 import os
 import re
 import json
+import csv
 import random
 import zlib
 import gc
@@ -25,7 +26,7 @@ MODEL_ID = "google/gemma-3-12b-it"
 MODEL_PATH = "/hf_models"  # mounted from model_registry
 
 DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
-OUTPUT_DIR = "/work/benchmarks/uncertainty_metrics/{model_name}_{lang}_eval_1.jsonl"
+OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 MAX_NEW_TOKENS = 512
 
@@ -383,12 +384,16 @@ def main() -> None:
     except Exception:
         pass
 
+    model_safe = safe_model_id(MODEL_ID)
+    OUTPUT_DIR = os.path.join(OUTPUT_BASE, model_safe, "evaluate")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     log("=" * 80)
     log(f"Processing model: {MODEL_ID}")
     log(f"Local model path: {MODEL_PATH}")
     log("=" * 80)
     log(f"Data root: {DATA_ROOT}")
-    log(f"Output template: {OUTPUT_DIR}")
+    log(f"Output directory: {OUTPUT_DIR}")
     log(f"Languages to process: {len(LANGS)}")
     log(f"RNG_SEED = {RNG_SEED}")
     log("Response format: JSON with reasoning and answer")
@@ -431,10 +436,9 @@ def main() -> None:
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
     log("")
 
-    model_safe = safe_model_id(MODEL_ID)
-
     global_total = 0
     global_correct = 0
+    lang_stats: Dict[str, Dict[str, Any]] = {}
 
     for lang in LANGS:
         path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
@@ -461,8 +465,7 @@ def main() -> None:
             log(f"[{lang}] SKIP: no eval items")
             continue
 
-        out_path = OUTPUT_DIR.format(model_name=model_safe, lang=lang)
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        out_path = os.path.join(OUTPUT_DIR, f"{lang}_eval_1.jsonl")
 
         # Load existing results to resume from where we left off
         existing_results = load_existing_results(out_path)
@@ -569,9 +572,33 @@ def main() -> None:
         log(f"[{lang}] DONE: correct={correct}/{total} -> accuracy={acc:.2f}%")
         log("")
 
+        lang_stats[lang] = {
+            "n_examples": total,
+            "correct": correct,
+            "accuracy": acc,
+        }
+
         # Clean up memory after each language
         gc.collect()
         torch.cuda.empty_cache()
+
+    # ---------- Save summary TSV
+    summary_path = os.path.join(OUTPUT_DIR, "evaluate_summary.tsv")
+    log(f"Saving summary to {summary_path}")
+
+    with open(summary_path, "w", encoding="utf-8", newline="") as out_f:
+        writer = csv.writer(out_f, delimiter="\t")
+        writer.writerow(["language", "n_examples", "correct", "accuracy"])
+        for lang in LANGS:
+            if lang not in lang_stats:
+                continue
+            st = lang_stats[lang]
+            writer.writerow([
+                lang,
+                st["n_examples"],
+                st["correct"],
+                f"{st['accuracy']:.2f}",
+            ])
 
     if global_total > 0:
         global_acc = 100.0 * (global_correct / global_total)

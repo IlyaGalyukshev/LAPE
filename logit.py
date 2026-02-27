@@ -24,8 +24,7 @@ MODEL_ID = "google/gemma-3-12b-it"
 MODEL_PATH = "/hf_models"  # mounted from model_registry
 
 DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
-OUTPUT_DIR = "/work/benchmarks/uncertainty_metrics"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 MAX_NEW_TOKENS = 64
 LOG_GREEDY_ANSWER = True
@@ -118,6 +117,24 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
 # -----------------------------
 # Aggregation helpers
 # -----------------------------
+def load_existing_results(path: str) -> Dict[int, Dict[str, Any]]:
+    results: Dict[int, Dict[str, Any]] = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    idx = rec.get("index")
+                    if idx is not None:
+                        results[idx] = rec
+        except Exception as e:
+            log(f"Warning: Could not load existing results from {path}: {e}")
+    return results
+
+
 def mean_and_std(values: List[float]) -> Tuple[float, float]:
     vals = [
         v
@@ -278,6 +295,10 @@ def main() -> None:
     except Exception:
         pass
 
+    model_id_safe = safe_model_id(MODEL_ID)
+    OUTPUT_DIR = os.path.join(OUTPUT_BASE, model_id_safe, "nll_entropy")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     log("=" * 80)
     log(f"Processing model: {MODEL_ID}")
     log(f"Local model path: {MODEL_PATH}")
@@ -371,80 +392,113 @@ def main() -> None:
         log(f"[{lang}] processing {path}")
         log(f"[{lang}] target token budget: {common_tokens}")
 
+        checkpoint_path = os.path.join(
+            OUTPUT_DIR, f"{lang}_nll_entropy.jsonl"
+        )
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        existing_results = load_existing_results(checkpoint_path)
+        log(f"[{lang}] Found {len(existing_results)} existing results, will skip those")
+
         used_tokens = 0
+        question_idx = 0
 
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                if used_tokens >= common_tokens:
-                    break
+        with open(checkpoint_path, "a", encoding="utf-8") as out_f:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if used_tokens >= common_tokens:
+                        break
 
-                line = line.strip()
-                if not line:
-                    continue
+                    line = line.strip()
+                    if not line:
+                        continue
 
-                obj = json.loads(line)
-                user_prompt = make_user_prompt(lang, obj)
-                model_input = apply_chat_if_available(tokenizer, user_prompt)
+                    question_idx += 1
 
-                token_ids = tokenizer.encode(model_input, add_special_tokens=False)
-                text_tokens = int(len(token_ids))
+                    obj = json.loads(line)
+                    user_prompt = make_user_prompt(lang, obj)
+                    model_input = apply_chat_if_available(tokenizer, user_prompt)
 
-                # stop if this example would exceed the common budget
-                if used_tokens + text_tokens > common_tokens:
-                    break
+                    token_ids = tokenizer.encode(model_input, add_special_tokens=False)
+                    text_tokens = int(len(token_ids))
 
-                log(
-                    f"[{lang}] example: {text_tokens} prompt tokens, cumulative: {used_tokens}/{common_tokens}"
-                )
+                    # stop if this example would exceed the common budget
+                    if used_tokens + text_tokens > common_tokens:
+                        break
 
-                if LOG_GREEDY_ANSWER:
-                    log(f"[{lang}] PROMPT:\n{user_prompt}")
+                    # Resume: restore from checkpoint
+                    if question_idx in existing_results:
+                        rec = existing_results[question_idx]
+                        st = stats_per_lang[lang]
+                        st["n_examples"] += 1
+                        st["MeanTokenNLL_values"].append(float(rec["MeanTokenNLL"]))
+                        st["SequenceNLL_values"].append(float(rec["SequenceNLL"]))
+                        st["MeanTokenEntropy_values"].append(float(rec["MeanTokenEntropy"]))
+                        used_tokens += text_tokens
+                        st["used_tokens"] = used_tokens
+                        continue
 
-                # one greedy generation per request
-                full_seq, prompt_len, gen_len = generate_greedy_single(
-                    model=model,
-                    tokenizer=tokenizer,
-                    model_input_text=model_input,
-                    max_new_tokens=MAX_NEW_TOKENS,
-                )
+                    log(
+                        f"[{lang}] [{question_idx}] example: {text_tokens} prompt tokens, cumulative: {used_tokens}/{common_tokens}"
+                    )
 
-                if LOG_GREEDY_ANSWER:
-                    gen_tokens = full_seq[prompt_len:]
-                    if (
-                        tokenizer.eos_token_id is not None
-                        and gen_tokens.numel() > 0
-                        and int(gen_tokens[-1].item()) == int(tokenizer.eos_token_id)
-                    ):
-                        gen_tokens = gen_tokens[:-1]
-                    ans = tokenizer.decode(gen_tokens, skip_special_tokens=True)
-                    log(f"[{lang}] ANSWER:\n{ans}")
+                    if LOG_GREEDY_ANSWER:
+                        log(f"[{lang}] PROMPT:\n{user_prompt}")
 
-                m = compute_metrics_single(
-                    model=model,
-                    tokenizer=tokenizer,
-                    full_seq=full_seq,
-                    prompt_len=prompt_len,
-                    gen_len=gen_len,
-                )
+                    # one greedy generation per request
+                    full_seq, prompt_len, gen_len = generate_greedy_single(
+                        model=model,
+                        tokenizer=tokenizer,
+                        model_input_text=model_input,
+                        max_new_tokens=MAX_NEW_TOKENS,
+                    )
 
-                st = stats_per_lang[lang]
-                st["n_examples"] += 1
-                st["MeanTokenNLL_values"].append(float(m["MeanTokenNLL"]))
-                st["SequenceNLL_values"].append(
-                    float(m["SequenceNLL"])
-                )
-                st["MeanTokenEntropy_values"].append(float(m["MeanTokenEntropy"]))
+                    if LOG_GREEDY_ANSWER:
+                        gen_tokens = full_seq[prompt_len:]
+                        if (
+                            tokenizer.eos_token_id is not None
+                            and gen_tokens.numel() > 0
+                            and int(gen_tokens[-1].item()) == int(tokenizer.eos_token_id)
+                        ):
+                            gen_tokens = gen_tokens[:-1]
+                        ans = tokenizer.decode(gen_tokens, skip_special_tokens=True)
+                        log(f"[{lang}] ANSWER:\n{ans}")
 
-                used_tokens += text_tokens
-                st["used_tokens"] = used_tokens
+                    m = compute_metrics_single(
+                        model=model,
+                        tokenizer=tokenizer,
+                        full_seq=full_seq,
+                        prompt_len=prompt_len,
+                        gen_len=gen_len,
+                    )
 
-                log(
-                    f"[{lang}] METRICS: "
-                    f"MeanTokenNLL={m['MeanTokenNLL']:.6f}, "
-                    f"SequenceNLL={m['SequenceNLL']:.6f}, "
-                    f"MeanTokenEntropy={m['MeanTokenEntropy']:.6f}"
-                )
-                log("")
+                    st = stats_per_lang[lang]
+                    st["n_examples"] += 1
+                    st["MeanTokenNLL_values"].append(float(m["MeanTokenNLL"]))
+                    st["SequenceNLL_values"].append(float(m["SequenceNLL"]))
+                    st["MeanTokenEntropy_values"].append(float(m["MeanTokenEntropy"]))
+
+                    used_tokens += text_tokens
+                    st["used_tokens"] = used_tokens
+
+                    # Save checkpoint
+                    rec = {
+                        "index": question_idx,
+                        "language": lang,
+                        "text_tokens": text_tokens,
+                        "MeanTokenNLL": float(m["MeanTokenNLL"]),
+                        "SequenceNLL": float(m["SequenceNLL"]),
+                        "MeanTokenEntropy": float(m["MeanTokenEntropy"]),
+                    }
+                    out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                    out_f.flush()
+
+                    log(
+                        f"[{lang}] METRICS: "
+                        f"MeanTokenNLL={m['MeanTokenNLL']:.6f}, "
+                        f"SequenceNLL={m['SequenceNLL']:.6f}, "
+                        f"MeanTokenEntropy={m['MeanTokenEntropy']:.6f}"
+                    )
+                    log("")
 
         st = stats_per_lang[lang]
         log(
@@ -453,10 +507,7 @@ def main() -> None:
         log("")
 
     # ---------- Save summary
-    model_id_safe = safe_model_id(MODEL_ID)
-    output_path = os.path.join(
-        OUTPUT_DIR, f"{model_id_safe}_nll_entropy_summary.tsv"
-    )
+    output_path = os.path.join(OUTPUT_DIR, "nll_entropy_summary.tsv")
     log(f"Saving aggregated metrics to {output_path}")
 
     with open(output_path, "w", encoding="utf-8", newline="") as out_f:
@@ -498,9 +549,7 @@ def main() -> None:
                 ]
             )
 
-    stats_json_path = os.path.join(
-        OUTPUT_DIR, f"{model_id_safe}_nll_entropy_stats_per_lang.json"
-    )
+    stats_json_path = os.path.join(OUTPUT_DIR, "nll_entropy_stats_per_lang.json")
     log(f"Saving raw stats_per_lang to: {stats_json_path}")
     with open(stats_json_path, "w", encoding="utf-8") as f:
         json.dump(stats_per_lang, f, indent=2, ensure_ascii=False)

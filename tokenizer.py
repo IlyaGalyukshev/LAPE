@@ -18,9 +18,7 @@ MODEL_ID = "google/gemma-3-12b-it"
 MODEL_PATH = "/hf_models"  # mounted from model_registry
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
-OUTPUT_DIR = "/work/benchmarks/uncertainty_metrics"
-OUT_SUBDIR = os.path.join(OUTPUT_DIR, "tokenizer_min_tokens_results")
-os.makedirs(OUT_SUBDIR, exist_ok=True)
+OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 LANGS = [
     "azerbaijani",
@@ -102,11 +100,15 @@ def mean_std(values: List[float]) -> (float, float):
 # MAIN
 # -----------------------------
 def main() -> None:
+    safe_name = safe_model_id(MODEL_ID)
+    OUTPUT_DIR = os.path.join(OUTPUT_BASE, safe_name, "tokenizer")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
     log("=" * 80)
     log(f"Processing model: {MODEL_ID}")
     log(f"MODEL_PATH: {MODEL_PATH}")
     log(f"DATA_ROOT: {DATA_ROOT}")
-    log(f"OUTPUT_DIR: {OUT_SUBDIR}")
+    log(f"OUTPUT_DIR: {OUTPUT_DIR}")
     log("=" * 80)
 
     log("Loading tokenizer (local_files_only=True)...")
@@ -158,13 +160,38 @@ def main() -> None:
         "\nSecond pass: collecting truncated stats (up to common_tokens per language)..."
     )
 
+    checkpoint_path = os.path.join(OUTPUT_DIR, "tokenizer_checkpoint.json")
+
     tokens_per_lang: Dict[str, int] = {}
     words_per_lang: Dict[str, int] = {}
     unique_tokens_per_lang: Dict[str, Set[int]] = {}
     chars_per_lang: Dict[str, Set[str]] = {}
     chars_per_token_values_per_lang: Dict[str, List[float]] = {}
 
+    # Load checkpoint if exists
+    completed_langs: List[str] = []
+    if os.path.exists(checkpoint_path):
+        log(f"Loading checkpoint from {checkpoint_path}...")
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as ckf:
+                ckpt = json.load(ckf)
+            completed_langs = ckpt.get("completed_langs", [])
+            for cl in completed_langs:
+                tokens_per_lang[cl] = ckpt["tokens_per_lang"][cl]
+                words_per_lang[cl] = ckpt["words_per_lang"][cl]
+                unique_tokens_per_lang[cl] = set(ckpt["unique_tokens_per_lang"][cl])
+                chars_per_lang[cl] = set(ckpt["chars_per_lang"][cl])
+                chars_per_token_values_per_lang[cl] = ckpt["chars_per_token_values_per_lang"][cl]
+            log(f"Resumed: {len(completed_langs)} languages already completed")
+        except Exception as e:
+            log(f"Warning: Could not load checkpoint: {e}")
+            completed_langs = []
+
     for lang in LANGS:
+        if lang in completed_langs:
+            log(f"[{lang}] skipping (already completed)")
+            continue
+
         path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
         log(f"[{lang}] processing with truncation from {path}")
 
@@ -174,7 +201,6 @@ def main() -> None:
         char_set: Set[str] = set()
         word_offset = 0
 
-        # NEW: collect per-token char lengths to compute mean/std
         cpt_values: List[float] = []
 
         with open(path, "r", encoding="utf-8") as f:
@@ -204,8 +230,6 @@ def main() -> None:
                 ids = encoded["input_ids"]
                 word_ids = encoded.word_ids()
 
-                # NEW: token strings for each token id (for char length)
-                # tokenizer.convert_ids_to_tokens returns list of token strings.
                 tok_strs = tokenizer.convert_ids_to_tokens(ids)
 
                 for tid, wid, tstr in zip(ids, word_ids, tok_strs):
@@ -215,9 +239,6 @@ def main() -> None:
                     token_ids_set.add(int(tid))
                     used_tokens += 1
 
-                    # NEW: Characters per Token value for this token
-                    # Count Unicode code points in the token string representation.
-                    # This is tokenizer-agnostic and matches "chars per token" style diagnostics.
                     cpt_values.append(float(len(tstr)))
 
                     if wid is not None:
@@ -236,6 +257,20 @@ def main() -> None:
             f"  used_tokens={used_tokens}, words_used={len(words_seen)}, "
             f"unique_tokens={len(token_ids_set)}, unique_chars={len(char_set)}"
         )
+
+        # Save checkpoint after each language
+        completed_langs.append(lang)
+        ckpt_data = {
+            "completed_langs": completed_langs,
+            "tokens_per_lang": {l: tokens_per_lang[l] for l in completed_langs},
+            "words_per_lang": {l: words_per_lang[l] for l in completed_langs},
+            "unique_tokens_per_lang": {l: sorted(unique_tokens_per_lang[l]) for l in completed_langs},
+            "chars_per_lang": {l: sorted(chars_per_lang[l]) for l in completed_langs},
+            "chars_per_token_values_per_lang": {l: chars_per_token_values_per_lang[l] for l in completed_langs},
+        }
+        with open(checkpoint_path, "w", encoding="utf-8") as ckf:
+            json.dump(ckpt_data, ckf, ensure_ascii=False)
+        log(f"  Checkpoint saved ({len(completed_langs)}/{len(LANGS)} languages)")
 
     log("\nBuilding major language token sets...")
     major_sets: Dict[str, Set[int]] = {}
@@ -323,14 +358,10 @@ def main() -> None:
             f"cpt_mean={cpt_mean:.3f}, cpt_std={cpt_std:.3f}"
         )
 
-    safe_name = safe_model_id(MODEL_ID)
-    csv_path = os.path.join(
-        OUT_SUBDIR, safe_name + "_tokenization_fertility_metrics.csv"
-    )
+    tsv_path = os.path.join(OUTPUT_DIR, "tokenizer_summary.tsv")
+    log(f"Saving summary to {tsv_path}")
 
     fieldnames = [
-        "model",
-        "model_path",
         "language",
         "vocab_size",
         "total_tokens_used",
@@ -341,25 +372,30 @@ def main() -> None:
         "unique_token_fraction",
         "num_unique_chars",
         "num_non_ascii_chars",
-        "non_ascii_chars",
         "shared_en_token_count",
         "shared_en_token_fraction",
         "shared_ru_token_count",
         "shared_ru_token_fraction",
         "shared_turkish_token_count",
         "shared_turkish_token_fraction",
-        # NEW fields
         "chars_per_token_mean",
         "chars_per_token_std",
     ]
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(tsv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter="\t")
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            tsv_row = {k: row[k] for k in fieldnames}
+            writer.writerow(tsv_row)
+
+    # Remove checkpoint after successful save
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+        log("Checkpoint removed (run completed successfully)")
 
     log("=" * 80)
-    log(f"Done. CSV saved to: {csv_path}")
+    log(f"Done. TSV saved to: {tsv_path}")
     log("=" * 80)
 
 

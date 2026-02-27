@@ -1,6 +1,7 @@
 # main.py
 import os
 import json
+import csv
 import math
 import torch
 from datetime import datetime
@@ -19,8 +20,7 @@ MODEL_ID = "google/gemma-3-4b-it"
 MODEL_PATH = "/hf_models"  # mounted from model_registry
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
-OUTPUT_DIR = "/work/benchmarks/uncertainty_metrics"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 LANGS = [
     "azerbaijani",
@@ -92,6 +92,10 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
 # -----------------------------
 def main() -> None:
     torch.set_grad_enabled(False)
+
+    safe_name = safe_model_id(MODEL_ID)
+    OUTPUT_DIR = os.path.join(OUTPUT_BASE, safe_name, "lape")
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     log_progress("=" * 80)
     log_progress(f"Starting LAPE analysis for model: {MODEL_ID}")
@@ -286,8 +290,23 @@ def main() -> None:
     log_progress("Collecting neuron activations (pass 2)...")
     log_progress("=" * 80)
 
+    checkpoint_path = os.path.join(OUTPUT_DIR, "lape_checkpoint.pt")
+
+    completed_lang_indices: List[int] = []
+    if os.path.exists(checkpoint_path):
+        log_progress(f"Loading checkpoint from {checkpoint_path}...")
+        ckpt = torch.load(checkpoint_path, weights_only=False)
+        over_zero.copy_(ckpt["over_zero"])
+        token_counts.copy_(ckpt["token_counts"])
+        completed_lang_indices = ckpt["completed_lang_indices"]
+        log_progress(f"Resumed: {len(completed_lang_indices)} languages already completed")
+
     with torch.no_grad():
         for lang_idx, lang in enumerate(LANGS):
+            if lang_idx in completed_lang_indices:
+                log_progress(f"\n[{lang_idx+1}/{len(LANGS)}] Skipping {lang} (already completed)")
+                continue
+
             current_lang_index = lang_idx
             path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
 
@@ -370,6 +389,18 @@ def main() -> None:
 
             if has_cuda:
                 torch.cuda.empty_cache()
+
+            # Save checkpoint after each language
+            completed_lang_indices.append(lang_idx)
+            torch.save(
+                {
+                    "over_zero": over_zero.clone(),
+                    "token_counts": token_counts.clone(),
+                    "completed_lang_indices": completed_lang_indices,
+                },
+                checkpoint_path,
+            )
+            log_progress(f"Checkpoint saved ({len(completed_lang_indices)}/{len(LANGS)} languages)")
 
     log_progress("\nActivation collection completed!")
     if has_cuda:
@@ -545,9 +576,8 @@ def main() -> None:
     log_progress("Saving results...")
     log_progress("=" * 80)
 
-    safe_name = safe_model_id(MODEL_ID)
-    stats_path = os.path.join(OUTPUT_DIR, safe_name + "_activation_stats.pt")
-    mask_path = os.path.join(OUTPUT_DIR, safe_name + "_lang_specific_neurons.pt")
+    stats_path = os.path.join(OUTPUT_DIR, "activation_stats.pt")
+    mask_path = os.path.join(OUTPUT_DIR, "lang_specific_neurons.pt")
 
     log_progress(f"Saving activation statistics to: {stats_path}")
     torch.save(activation_data, stats_path)
@@ -555,11 +585,41 @@ def main() -> None:
     log_progress(f"Saving language-specific neurons to: {mask_path}")
     torch.save(mask_data, mask_path)
 
+    # Save TSV summary
+    summary_path = os.path.join(OUTPUT_DIR, "lape_summary.tsv")
+    log_progress(f"Saving summary to: {summary_path}")
+
+    with open(summary_path, "w", encoding="utf-8", newline="") as out_f:
+        writer = csv.writer(out_f, delimiter="\t")
+        writer.writerow([
+            "language",
+            "tokens_used",
+            "lang_specific_neurons",
+            "lang_specific_neurons_pct",
+        ])
+        for lang_id, lang in enumerate(LANGS):
+            neuron_count = sum(
+                len(layer_neurons) for layer_neurons in final_lang_neurons[lang_id]
+            )
+            percentage = (neuron_count / total_neurons) * 100
+            writer.writerow([
+                lang,
+                int(token_counts[lang_id].item()),
+                neuron_count,
+                f"{percentage:.3f}",
+            ])
+
+    # Remove checkpoint after successful save
+    if os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
+        log_progress("Checkpoint removed (run completed successfully)")
+
     log_progress("\n" + "=" * 80)
     log_progress("LAPE analysis completed successfully!")
     log_progress("=" * 80)
     print("\nActivation stats saved to:", stats_path)
     print("Language-specific neurons saved to:", mask_path)
+    print("Summary saved to:", summary_path)
 
 
 if __name__ == "__main__":
