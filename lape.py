@@ -14,10 +14,10 @@ hf_logging.set_verbosity_error()
 
 
 # -----------------------------
-# JOB CONFIG (paths like in your benchmark jobs)
+# CONFIG
 # -----------------------------
 MODEL_ID = "google/gemma-3-4b-it"
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = "/hf_models"
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -39,7 +39,7 @@ LANGS = [
     "uzbek-cyrillic",
 ]
 
-CHUNK_SIZE = 128  # keep exactly as in your code (reduced to save GPU memory)
+CHUNK_SIZE = 128
 
 TOP_RATE = 0.01
 FILTER_RATE = 0.95
@@ -91,7 +91,7 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
 
 
 # -----------------------------
-# LAPE logic (DO NOT CHANGE) — rewritten to job-style paths + local model loading
+# LAPE
 # -----------------------------
 def main() -> None:
     torch.set_grad_enabled(False)
@@ -131,7 +131,6 @@ def main() -> None:
 
     log_progress("Loading model (local_files_only=True)...")
     if has_cuda:
-        # job-style: shard automatically if multiple GPUs exist
         model = AutoModelForCausalLM.from_pretrained(
             MODEL_PATH,
             torch_dtype=torch.float16,
@@ -169,8 +168,7 @@ def main() -> None:
             )
 
     # -----------------------------
-    # Pass 1: count tokens per language and find minimum (same notion as your original)
-    # tokenization uses: tokenizer(text, add_special_tokens=True)
+    # Pass 1: count tokens per language and find minimum
     # -----------------------------
     lang_token_counts: Dict[str, int] = {}
     min_tokens = None
@@ -204,7 +202,7 @@ def main() -> None:
     log_progress(f"\nMinimum tokens across all languages: {common_tokens}")
 
     # -----------------------------
-    # Model architecture mapping (same as your original)
+    # Model architecture mapping
     # -----------------------------
     model_type = model.config.model_type
 
@@ -241,7 +239,6 @@ def main() -> None:
     log_progress(f"Intermediate size (neurons per layer): {intermediate_size}")
     log_progress(f"Total neurons in model: {num_layers * intermediate_size:,}")
 
-    # Keep accumulation on CPU to be robust with device_map="auto"
     over_zero = torch.zeros(
         num_layers, intermediate_size, len(LANGS), dtype=torch.long, device="cpu"
     )
@@ -304,8 +301,7 @@ def main() -> None:
     log_progress(f"Hooks registered for all {num_layers} layers")
 
     # -----------------------------
-    # Pass 2: stream tokens (first common_tokens from concatenation) and run model
-    # This preserves the same effective token stream as torch.cat(ids_list)[:common_tokens]
+    # Pass 2: stream tokens
     # -----------------------------
     log_progress("\n" + "=" * 80)
     log_progress("Collecting neuron activations (pass 2)...")
@@ -569,9 +565,17 @@ def main() -> None:
         "model_path": MODEL_PATH,
         "model_type": model_type,
         "num_layers": int(num_layers),
-        "hidden_size": int(model.config.text_config.hidden_size if model_type == "gemma3" else model.config.hidden_size),
+        "hidden_size": int(
+            model.config.text_config.hidden_size
+            if model_type == "gemma3"
+            else model.config.hidden_size
+        ),
         "intermediate_size": int(intermediate_size),
-        "vocab_size": int(model.config.text_config.vocab_size if model_type == "gemma3" else model.config.vocab_size),
+        "vocab_size": int(
+            model.config.text_config.vocab_size
+            if model_type == "gemma3"
+            else model.config.vocab_size
+        ),
         "num_parameters": int(param_count),
     }
 

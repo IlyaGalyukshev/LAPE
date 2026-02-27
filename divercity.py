@@ -1,4 +1,3 @@
-# main.py
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -16,15 +15,15 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 # -----------------------------
-# CONFIG (only paths / model / generation params)
+# CONFIG
 # -----------------------------
 MODEL_ID = "google/gemma-3-12b-it"
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = "/hf_models"
 
-DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
+DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
-# Generation parameters for sampling (affects LexicalSimilarity/DegMat/EigValLaplacian/Eccentricity)
+# Generation parameters for sampling
 SAMPLES_N = 10
 MAX_NEW_TOKENS = 64
 TEMPERATURE = 0.9
@@ -32,15 +31,15 @@ TOP_P = 0.95
 TOP_K = 0  # 0 => disabled
 REPETITION_PENALTY = 1.0
 
-# Optional: greedy answer for logging (doesn't affect the 4 metrics; metrics are on sampled texts)
+# Optional: greedy answer for logging (doesn't affect the metrics)
 LOG_GREEDY_ANSWER = True
 GREEDY_MAX_NEW_TOKENS = 64
 
-# Batch prompts for throughput (be careful: effective batch = BATCH_SIZE * SAMPLES_N sequences)
+# Batch prompts for throughput (effective batch = BATCH_SIZE * SAMPLES_N sequences)
 BATCH_SIZE = 2
 
-# LexicalSimilarity mode: in lm-polygraph supports rouge* and BLEU; here we implement BLEU locally
-LEXICAL_SIM_METRIC = "BLEU"  # keep language-agnostic, no stemmers, no external models
+# LexicalSimilarity mode:
+LEXICAL_SIM_METRIC = "BLEU"
 
 
 LANGS = [
@@ -128,8 +127,7 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
 
 
 # -----------------------------
-# Generation (sampling) — matches the *idea* of lm-polygraph SamplingGenerationCalculator:
-# take tokens after prompt and stop at first EOS (if appears).
+# Generation (sampling)
 # -----------------------------
 @torch.inference_mode()
 def generate_grouped_samples(
@@ -173,7 +171,7 @@ def generate_grouped_samples(
         pad_token_id=tokenizer.pad_token_id,
         use_cache=True,
     )
-    
+
     if top_k and top_k > 0:
         gen_kwargs["top_k"] = int(top_k)
 
@@ -198,7 +196,7 @@ def generate_grouped_samples(
             seq = out[base + j]
             gen_tokens = seq[p_len:]  # tokens after prompt
 
-            # stop at first EOS (same behavior as lm-polygraph sampling calculator)
+            # stop at first EOS
             if tokenizer.eos_token_id is not None:
                 eos_positions = (gen_tokens == tokenizer.eos_token_id).nonzero(
                     as_tuple=False
@@ -253,7 +251,7 @@ def generate_greedy_answer(
 
 
 # -----------------------------
-# Similarity score — matches lm-polygraph estimators.common.compute_sim_score (Jaccard_score). :contentReference[oaicite:5]{index=5}
+# Similarity score
 # -----------------------------
 def compute_sim_score_jaccard(text1: str, text2: str) -> float:
     tokens1 = set(text1.lower().split())
@@ -266,9 +264,7 @@ def compute_sim_score_jaccard(text1: str, text2: str) -> float:
 
 
 # -----------------------------
-# LexicalSimilarity (BLEU) — mirrors lm-polygraph class behavior for metric="BLEU":
-# it averages (1 - BLEU) over all pairs and returns negative mean.
-# We implement BLEU locally (no nltk).
+# LexicalSimilarity (BLEU)
 # -----------------------------
 def _count_ngrams(tokens: List[str], n: int) -> Dict[Tuple[str, ...], int]:
     from collections import Counter
@@ -342,7 +338,7 @@ def sentence_bleu_like_lm_polygraph(
         p_n = _modified_precision(reference, candidate, n)
         precisions.append(p_n)
 
-    # If any precision is 0, BLEU becomes 0 (no smoothing here, consistent with default nltk behavior)
+    # If any precision is 0, BLEU becomes 0
     if any(p == 0.0 for p in precisions):
         return 0.0
 
@@ -358,7 +354,6 @@ def sentence_bleu_like_lm_polygraph(
 def lexical_similarity_uncertainty(
     sample_texts: List[str], metric: str = "BLEU"
 ) -> float:
-    # lm-polygraph returns -mean(1 - similarity) over all unordered pairs
     n = len(sample_texts)
     if n < 2:
         return float("nan")
@@ -382,8 +377,8 @@ def lexical_similarity_uncertainty(
 
 
 # -----------------------------
-# Graph-based metrics — reproduce lm-polygraph estimators:
-# DegMat / EigValLaplacian / Eccentricity using Jaccard_score path (no NLI).
+# Graph-based metrics
+# DegMat / EigValLaplacian / Eccentricity using Jaccard_score path.
 # -----------------------------
 def build_W_jaccard(answers: List[str]) -> np.ndarray:
     n = len(answers)
@@ -397,7 +392,6 @@ def build_W_jaccard(answers: List[str]) -> np.ndarray:
 
 
 def degmat_uncertainty(sample_texts: List[str]) -> float:
-    # matches U_DegMat logic
     n = len(sample_texts)
     if n == 0:
         return float("nan")
@@ -407,7 +401,6 @@ def degmat_uncertainty(sample_texts: List[str]) -> float:
 
 
 def eigvallaplacian_uncertainty(sample_texts: List[str]) -> float:
-    # matches U_EigValLaplacian logic
     n = len(sample_texts)
     if n == 0:
         return float("nan")
@@ -424,13 +417,11 @@ def floyd_warshall_all_pairs(dist: np.ndarray) -> np.ndarray:
     n = dist.shape[0]
     d = dist.copy()
     for k in range(n):
-        # vectorized update
         d = np.minimum(d, d[:, [k]] + d[[k], :])
     return d
 
 
 def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> float:
-    # matches U_Eccentricity logic (Jaccard path)
     n = len(sample_texts)
     if n == 0:
         return float("nan")
@@ -445,10 +436,9 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
     eigvals_kept = eigvals[keep_mask]
     eigvecs_kept = eigvecs[:, keep_mask]
 
-    # C_Ecc_s_j = smallest_eigenvectors.T @ smallest_eigenvectors (as in lm-polygraph)
+    # C_Ecc_s_j = smallest_eigenvectors.T @ smallest_eigenvectors
     # Then C_sim = max(0, C) and D_ecc = -log(C_sim)
     if eigvecs_kept.size == 0:
-        # extremely unlikely (there is always eigenvalue 0), but handle
         return float("nan")
 
     C = eigvecs_kept.T @ eigvecs_kept
@@ -457,7 +447,6 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
     D_ecc = np.where(C_sim > 0.0, -np.log(C_sim), np.inf)
     np.fill_diagonal(D_ecc, 0.0)
 
-    # shortest paths (like scipy.sparse.csgraph.shortest_path in lm-polygraph)
     sp = floyd_warshall_all_pairs(D_ecc)
 
     # eccentricity per node: max shortest-path distance from node
@@ -537,7 +526,6 @@ def main() -> None:
         tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
 
     if tokenizer.pad_token_id is None:
-        # safe default for generation
         if tokenizer.eos_token_id is not None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         elif tokenizer.eos_token is not None:
@@ -561,7 +549,7 @@ def main() -> None:
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
     log("")
 
-    # ---------- First pass: count token budget (use real model input text, incl chat template)
+    # ---------- First pass: count token budget
     log("First pass: counting total tokens per language (full corpora)...")
     total_tokens_raw: Dict[str, int] = {}
 
@@ -608,9 +596,7 @@ def main() -> None:
         log(f"[{lang}] processing {path}")
         log(f"[{lang}] target token budget: {common_tokens}")
 
-        checkpoint_path = os.path.join(
-            OUTPUT_DIR, f"{lang}_graph_metrics.jsonl"
-        )
+        checkpoint_path = os.path.join(OUTPUT_DIR, f"{lang}_graph_metrics.jsonl")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         existing_results = load_existing_results(checkpoint_path)
         log(f"[{lang}] Found {len(existing_results)} existing results, will skip those")
@@ -622,7 +608,6 @@ def main() -> None:
         buffer_token_lens: List[int] = []
         buffer_question_indices: List[int] = []
 
-        # Open checkpoint file for appending new results
         checkpoint_f = open(checkpoint_path, "a", encoding="utf-8")
 
         def flush_buffer():
@@ -728,9 +713,13 @@ def main() -> None:
                     rec = existing_results[question_idx]
                     stats = stats_per_lang[lang]
                     stats["n_examples"] += 1
-                    stats["lexical_similarity_values"].append(float(rec["lexical_similarity"]))
+                    stats["lexical_similarity_values"].append(
+                        float(rec["lexical_similarity"])
+                    )
                     stats["degmat_values"].append(float(rec["degmat"]))
-                    stats["eigvallaplacian_values"].append(float(rec["eigvallaplacian"]))
+                    stats["eigvallaplacian_values"].append(
+                        float(rec["eigvallaplacian"])
+                    )
                     stats["eccentricity_values"].append(float(rec["eccentricity"]))
                     used_tokens += text_tokens
                     stats["used_tokens"] = used_tokens

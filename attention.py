@@ -38,9 +38,7 @@ FOCUS_RHO = 0.01
 FOCUS_KW_IDF_QUANTILE = 0.75
 
 # IDF computed per-language, only from that language file (independent across languages)
-IDF_MAX_DOCS = (
-    -1
-)  # -1 => all docs of language file (can be heavy but faithful & independent)
+IDF_MAX_DOCS = -1  # -1 => all docs of language file
 
 # RAUQ hyperparams:
 RAUQ_ALPHA = 0.2  # in RAUQ paper: alpha=0.2 for QA-type tasks; robust single hyperparam
@@ -331,7 +329,6 @@ def compute_focus_and_rauq_single(
 
     attentions = out.attentions
     if attentions is None or len(attentions) == 0:
-        # This happens with FlashAttention / SDPA fast paths; must force eager attention.
         return {"Focus": float("nan"), "RAUQ": float("nan")}
 
     num_layers = len(attentions)
@@ -544,7 +541,6 @@ def compute_focus_and_rauq_single(
 # MAIN
 # -----------------------------
 def main() -> None:
-    # Make SDPA fall back to math (attentions are usually not available on flash/mem-efficient paths)
     try:
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(False)
@@ -669,9 +665,7 @@ def main() -> None:
         )
         idf_t = torch.tensor(idf_np, device=model.device, dtype=torch.float32)
 
-        checkpoint_path = os.path.join(
-            OUTPUT_DIR, f"{lang}_rauq_focus.jsonl"
-        )
+        checkpoint_path = os.path.join(OUTPUT_DIR, f"{lang}_rauq_focus.jsonl")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         existing_results = load_existing_results(checkpoint_path)
         log(f"[{lang}] Found {len(existing_results)} existing results, will skip those")
@@ -731,7 +725,8 @@ def main() -> None:
                         if (
                             tokenizer.eos_token_id is not None
                             and gen_tokens.numel() > 0
-                            and int(gen_tokens[-1].item()) == int(tokenizer.eos_token_id)
+                            and int(gen_tokens[-1].item())
+                            == int(tokenizer.eos_token_id)
                         ):
                             gen_tokens = gen_tokens[:-1]
                         ans = tokenizer.decode(gen_tokens, skip_special_tokens=True)
@@ -769,7 +764,9 @@ def main() -> None:
                     out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     out_f.flush()
 
-                    log(f"[{lang}] METRICS: RAUQ={m['RAUQ']:.6f}, Focus={m['Focus']:.6f}")
+                    log(
+                        f"[{lang}] METRICS: RAUQ={m['RAUQ']:.6f}, Focus={m['Focus']:.6f}"
+                    )
                     log("")
 
         st = stats_per_lang[lang]

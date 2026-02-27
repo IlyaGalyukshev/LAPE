@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import csv
@@ -12,10 +11,10 @@ hf_logging.set_verbosity_error()
 
 
 # -----------------------------
-# JOB CONFIG (paths like in your benchmark jobs)
+# CONFIG
 # -----------------------------
 MODEL_ID = "google/gemma-3-12b-it"
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = "/hf_models"
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -181,7 +180,9 @@ def main() -> None:
                 words_per_lang[cl] = ckpt["words_per_lang"][cl]
                 unique_tokens_per_lang[cl] = set(ckpt["unique_tokens_per_lang"][cl])
                 chars_per_lang[cl] = set(ckpt["chars_per_lang"][cl])
-                chars_per_token_values_per_lang[cl] = ckpt["chars_per_token_values_per_lang"][cl]
+                chars_per_token_values_per_lang[cl] = ckpt[
+                    "chars_per_token_values_per_lang"
+                ][cl]
             log(f"Resumed: {len(completed_langs)} languages already completed")
         except Exception as e:
             log(f"Warning: Could not load checkpoint: {e}")
@@ -264,9 +265,13 @@ def main() -> None:
             "completed_langs": completed_langs,
             "tokens_per_lang": {l: tokens_per_lang[l] for l in completed_langs},
             "words_per_lang": {l: words_per_lang[l] for l in completed_langs},
-            "unique_tokens_per_lang": {l: sorted(unique_tokens_per_lang[l]) for l in completed_langs},
+            "unique_tokens_per_lang": {
+                l: sorted(unique_tokens_per_lang[l]) for l in completed_langs
+            },
             "chars_per_lang": {l: sorted(chars_per_lang[l]) for l in completed_langs},
-            "chars_per_token_values_per_lang": {l: chars_per_token_values_per_lang[l] for l in completed_langs},
+            "chars_per_token_values_per_lang": {
+                l: chars_per_token_values_per_lang[l] for l in completed_langs
+            },
         }
         with open(checkpoint_path, "w", encoding="utf-8") as ckf:
             json.dump(ckpt_data, ckf, ensure_ascii=False)
@@ -319,7 +324,6 @@ def main() -> None:
             shared_tk_count = 0
             shared_tk_fraction = 0.0
 
-        # NEW: Characters per Token mean/std for the truncated stream
         cpt_vals = chars_per_token_values_per_lang.get(lang, [])
         cpt_mean, cpt_std = mean_std(cpt_vals)
 
@@ -343,7 +347,6 @@ def main() -> None:
             "shared_ru_token_fraction": shared_ru_fraction,
             "shared_turkish_token_count": shared_tk_count,
             "shared_turkish_token_fraction": shared_tk_fraction,
-            # NEW fields
             "chars_per_token_mean": cpt_mean,
             "chars_per_token_std": cpt_std,
         }

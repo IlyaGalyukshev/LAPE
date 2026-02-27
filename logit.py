@@ -21,9 +21,9 @@ hf_logging.set_verbosity_error()
 # CONFIG
 # -----------------------------
 MODEL_ID = "google/gemma-3-12b-it"
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = "/hf_models"
 
-DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
+DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
 
 MAX_NEW_TOKENS = 64
@@ -226,7 +226,6 @@ def compute_metrics_single(
             "MeanTokenEntropy": float("nan"),
         }
 
-    # Model forward
     input_ids = full_seq.unsqueeze(0)  # (1, L)
     attention_mask = torch.ones_like(
         input_ids, dtype=torch.long, device=input_ids.device
@@ -315,7 +314,6 @@ def main() -> None:
         local_files_only=True,
     )
 
-    # even though we don't batch, set left padding to silence decoder-only right-padding warning
     tokenizer.padding_side = "left"
 
     if tokenizer.eos_token_id is None and tokenizer.eos_token is not None:
@@ -392,9 +390,7 @@ def main() -> None:
         log(f"[{lang}] processing {path}")
         log(f"[{lang}] target token budget: {common_tokens}")
 
-        checkpoint_path = os.path.join(
-            OUTPUT_DIR, f"{lang}_nll_entropy.jsonl"
-        )
+        checkpoint_path = os.path.join(OUTPUT_DIR, f"{lang}_nll_entropy.jsonl")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
         existing_results = load_existing_results(checkpoint_path)
         log(f"[{lang}] Found {len(existing_results)} existing results, will skip those")
@@ -421,18 +417,19 @@ def main() -> None:
                     token_ids = tokenizer.encode(model_input, add_special_tokens=False)
                     text_tokens = int(len(token_ids))
 
-                    # stop if this example would exceed the common budget
                     if used_tokens + text_tokens > common_tokens:
                         break
 
-                    # Resume: restore from checkpoint
+                    # Resume
                     if question_idx in existing_results:
                         rec = existing_results[question_idx]
                         st = stats_per_lang[lang]
                         st["n_examples"] += 1
                         st["MeanTokenNLL_values"].append(float(rec["MeanTokenNLL"]))
                         st["SequenceNLL_values"].append(float(rec["SequenceNLL"]))
-                        st["MeanTokenEntropy_values"].append(float(rec["MeanTokenEntropy"]))
+                        st["MeanTokenEntropy_values"].append(
+                            float(rec["MeanTokenEntropy"])
+                        )
                         used_tokens += text_tokens
                         st["used_tokens"] = used_tokens
                         continue
@@ -457,7 +454,8 @@ def main() -> None:
                         if (
                             tokenizer.eos_token_id is not None
                             and gen_tokens.numel() > 0
-                            and int(gen_tokens[-1].item()) == int(tokenizer.eos_token_id)
+                            and int(gen_tokens[-1].item())
+                            == int(tokenizer.eos_token_id)
                         ):
                             gen_tokens = gen_tokens[:-1]
                         ans = tokenizer.decode(gen_tokens, skip_special_tokens=True)

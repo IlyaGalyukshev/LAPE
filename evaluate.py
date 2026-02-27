@@ -122,7 +122,7 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
 
 
 # -----------------------------
-# Shuffle (same mapping logic)
+# Shuffle
 # -----------------------------
 def shuffle_choices(
     options: List[str], answer: str, rng: random.Random
@@ -145,7 +145,7 @@ def shuffle_choices(
 
 
 # -----------------------------
-# Parse output -> A/B/C/D (same pattern logic, but keyword from PROMPTS)
+# Parse output -> A/B/C/D
 # -----------------------------
 def answer_keyword_from_prompt(prompt_template: str) -> str:
     s = prompt_template.strip()
@@ -165,18 +165,16 @@ def parse_json_response(text: str) -> Tuple[Optional[str], Optional[str]]:
     Parse JSON response from model.
     Returns (reasoning, answer) tuple.
     """
-    text = text.strip().replace('\\', '')
+    text = text.strip().replace("\\", "")
 
     # Try to extract JSON from markdown code blocks
     markdown_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if markdown_match:
         text = markdown_match.group(1)
 
-    # Try to find JSON in the response with nested objects support
-    # First try to find the outermost braces
+    # Try to find JSON in the response
     start = text.find("{")
     if start != -1:
-        # Find matching closing brace
         brace_count = 0
         end = start
         for i in range(start, len(text)):
@@ -196,17 +194,14 @@ def parse_json_response(text: str) -> Tuple[Optional[str], Optional[str]]:
                 answer = data.get("answer", "")
                 if answer:
                     answer = str(answer).strip().upper()
-                    # Handle both single letter and full word answers
                     if answer in ["A", "B", "C", "D"]:
                         return reasoning, answer
-                    # Try to extract letter from longer answer
                     letter_match = re.search(r"\b([ABCD])\b", answer)
                     if letter_match:
                         return reasoning, letter_match.group(1)
             except json.JSONDecodeError:
                 pass
 
-    # Fallback: try to extract answer from text
     return None, None
 
 
@@ -317,7 +312,7 @@ def load_existing_results(path: str) -> Dict[int, Dict[str, Any]]:
 
 
 # -----------------------------
-# Prompt building (5-shot)
+# Prompt building
 # -----------------------------
 def make_user_prompt(lang: str, question: str, choices: List[str]) -> str:
     formatted_choices = format_choices(choices)
@@ -478,10 +473,8 @@ def main() -> None:
         correct = 0
         total = 0
 
-        # Open in append mode to continue from where we left off
         with open(out_path, "a", encoding="utf-8") as out_f:
             for i, (subject, obj) in enumerate(eval_items, start=1):
-                # Skip if already processed
                 if i in existing_results:
                     result = existing_results[i]
                     total += 1
@@ -524,10 +517,8 @@ def main() -> None:
                     max_new_tokens=MAX_NEW_TOKENS,
                 )
 
-                # Parse JSON response
                 reasoning, pred = parse_json_response(output)
 
-                # Fallback to old parsing if JSON parsing failed
                 if pred is None:
                     pred = find_matching_pattern(output, lang)
 
@@ -547,7 +538,6 @@ def main() -> None:
                 log(f"[{lang}] CORRECT: {is_correct}")
                 log("")
 
-                # Save result with all required fields
                 rec = {
                     "index": i,
                     "question": question,
@@ -561,7 +551,7 @@ def main() -> None:
                     "is_correct": is_correct,
                 }
                 out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                out_f.flush()  # Force write to disk after each question
+                out_f.flush()
 
                 # Periodic memory cleanup every 10 questions
                 if i % 10 == 0:
@@ -593,12 +583,14 @@ def main() -> None:
             if lang not in lang_stats:
                 continue
             st = lang_stats[lang]
-            writer.writerow([
-                lang,
-                st["n_examples"],
-                st["correct"],
-                f"{st['accuracy']:.2f}",
-            ])
+            writer.writerow(
+                [
+                    lang,
+                    st["n_examples"],
+                    st["correct"],
+                    f"{st['accuracy']:.2f}",
+                ]
+            )
 
     if global_total > 0:
         global_acc = 100.0 * (global_correct / global_total)
