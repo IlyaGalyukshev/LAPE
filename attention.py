@@ -114,7 +114,6 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
             tokenizer, "chat_template", None
         ):
             messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": user_text},
             ]
             return tokenizer.apply_chat_template(

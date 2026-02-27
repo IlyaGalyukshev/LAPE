@@ -41,8 +41,6 @@ LANGS = [
     "uzbek-cyrillic",
 ]
 
-CHUNK_SIZE = 128
-
 TOP_RATE = 0.01
 FILTER_RATE = 0.95
 ACTIVATION_BAR_RATIO = 0.95
@@ -92,6 +90,22 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
     return prompt_template.format(question=obj["question"], choices=formatted_choices)
 
 
+def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
+    try:
+        if hasattr(tokenizer, "apply_chat_template") and getattr(
+            tokenizer, "chat_template", None
+        ):
+            messages = [
+                {"role": "user", "content": user_text},
+            ]
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+    except Exception:
+        pass
+    return user_text
+
+
 # -----------------------------
 # LAPE
 # -----------------------------
@@ -128,8 +142,10 @@ def main() -> None:
         use_fast=True,
         local_files_only=True,
     )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     log_progress("Loading model (local_files_only=True)...")
     if has_cuda:
@@ -189,7 +205,8 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
-                ids = tokenizer(text, add_special_tokens=True)["input_ids"]
+                model_input = apply_chat_if_available(tokenizer, text)
+                ids = tokenizer(model_input, add_special_tokens=False)["input_ids"]
                 total += len(ids)
                 n_questions += 1
 
@@ -303,7 +320,7 @@ def main() -> None:
     log_progress(f"Hooks registered for all {num_layers} layers")
 
     # -----------------------------
-    # Pass 2: stream tokens
+    # Pass 2: feed questions to model
     # -----------------------------
     log_progress("\n" + "=" * 80)
     log_progress("Collecting neuron activations (pass 2)...")
@@ -334,39 +351,11 @@ def main() -> None:
             path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
 
             tokens_used = 0
-            buffer: List[int] = []
+            n_questions = 0
 
-            total_chunks = (common_tokens + CHUNK_SIZE - 1) // CHUNK_SIZE
             log_progress(
-                f"\n[{lang_idx+1}/{len(LANGS)}] Processing {lang} ({common_tokens} tokens, {total_chunks} chunks)..."
+                f"\n[{lang_idx+1}/{len(LANGS)}] Processing {lang} (budget: {common_tokens} tokens)..."
             )
-
-            def flush_full_chunks():
-                nonlocal tokens_used, buffer
-                chunk_num_local = 0
-                while len(buffer) >= CHUNK_SIZE and tokens_used < common_tokens:
-                    take = CHUNK_SIZE
-                    chunk = buffer[:take]
-                    buffer = buffer[take:]
-
-                    input_ids = (
-                        torch.tensor(chunk, dtype=torch.long)
-                        .unsqueeze(0)
-                        .to(input_device)
-                    )
-                    _ = model(input_ids=input_ids, use_cache=False)
-
-                    tokens_used += take
-                    chunk_num_local += 1
-
-                    if (
-                        tokens_used // CHUNK_SIZE
-                    ) % 10 == 0 or tokens_used >= common_tokens:
-                        done_chunks = min(tokens_used // CHUNK_SIZE, total_chunks)
-                        progress_pct = (done_chunks / total_chunks) * 100.0
-                        log_progress(
-                            f"  - Progress: ~{done_chunks}/{total_chunks} chunks ({progress_pct:.1f}%)"
-                        )
 
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -377,38 +366,34 @@ def main() -> None:
                         continue
                     obj = json.loads(line)
                     text = make_user_prompt(lang, obj)
-                    ids = tokenizer(text, add_special_tokens=True)["input_ids"]
+                    model_input = apply_chat_if_available(tokenizer, text)
+                    ids = tokenizer(model_input, add_special_tokens=False)["input_ids"]
+                    text_tokens = len(ids)
 
-                    remaining = common_tokens - (tokens_used + len(buffer))
-                    if remaining <= 0:
+                    if tokens_used + text_tokens > common_tokens:
                         break
 
-                    if len(ids) > remaining:
-                        ids = ids[:remaining]
-
-                    buffer.extend(ids)
-                    flush_full_chunks()
-
-            # flush remainder (<= CHUNK_SIZE) if any tokens still needed
-            if tokens_used < common_tokens and len(buffer) > 0:
-                remaining = common_tokens - tokens_used
-                if remaining > 0:
-                    chunk = buffer[:remaining]
                     input_ids = (
-                        torch.tensor(chunk, dtype=torch.long)
+                        torch.tensor(ids, dtype=torch.long)
                         .unsqueeze(0)
                         .to(input_device)
                     )
                     _ = model(input_ids=input_ids, use_cache=False)
-                    tokens_used += len(chunk)
-                buffer = []
+
+                    tokens_used += text_tokens
+                    n_questions += 1
+
+                    if n_questions % 10 == 0:
+                        log_progress(
+                            f"  - Progress: {n_questions} questions, "
+                            f"{tokens_used}/{common_tokens} tokens "
+                            f"({tokens_used / common_tokens * 100:.1f}%)"
+                        )
 
             token_counts[lang_idx] = tokens_used
-
-            if tokens_used != common_tokens:
-                log_progress(
-                    f"WARNING: {lang} used_tokens={tokens_used} != common_tokens={common_tokens}"
-                )
+            log_progress(
+                f"  - Done: {n_questions} questions, {tokens_used}/{common_tokens} tokens"
+            )
 
             if has_cuda:
                 torch.cuda.empty_cache()

@@ -87,6 +87,22 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
     return prompt_template.format(question=obj["question"], choices=formatted_choices)
 
 
+def apply_chat_if_available(tokenizer, user_text: str) -> str:
+    try:
+        if hasattr(tokenizer, "apply_chat_template") and getattr(
+            tokenizer, "chat_template", None
+        ):
+            messages = [
+                {"role": "user", "content": user_text},
+            ]
+            return tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+    except Exception:
+        pass
+    return user_text
+
+
 def mean_std(values: List[float]) -> (float, float):
     vals = [v for v in values if v is not None]
     if not vals:
@@ -115,22 +131,15 @@ def main() -> None:
     log("=" * 80)
 
     log("Loading tokenizer (local_files_only=True)...")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_PATH,
-            use_fast=True,
-            add_prefix_space=True,
-            local_files_only=True,
-        )
-    except TypeError:
-        tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_PATH,
-            use_fast=True,
-            local_files_only=True,
-        )
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_PATH,
+        use_fast=True,
+        local_files_only=True,
+    )
 
     if tokenizer.pad_token is None and tokenizer.eos_token is not None:
         tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     vocab_size = len(tokenizer)
     log(f"Vocab size: {vocab_size}")
@@ -150,7 +159,8 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
-                token_ids = tokenizer.encode(text, add_special_tokens=False)
+                model_input = apply_chat_if_available(tokenizer, text)
+                token_ids = tokenizer.encode(model_input, add_special_tokens=False)
                 total_tokens += len(token_ids)
 
         total_tokens_raw[lang] = total_tokens
@@ -201,11 +211,9 @@ def main() -> None:
         log(f"[{lang}] processing with truncation from {path}")
 
         used_tokens = 0
-        words_seen = set()
+        word_count = 0
         token_ids_set: Set[int] = set()
         char_set: Set[str] = set()
-        word_offset = 0
-
         cpt_values: List[float] = []
 
         with open(path, "r", encoding="utf-8") as f:
@@ -217,49 +225,38 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
+                model_input = apply_chat_if_available(tokenizer, text)
 
+                ids = tokenizer.encode(model_input, add_special_tokens=False)
+                text_tokens = len(ids)
+
+                if used_tokens + text_tokens > common_tokens:
+                    break
+
+                # Chars and words from user prompt (language content)
                 for ch in text:
                     char_set.add(ch)
-
                 words = text.strip().split()
-                if not words:
-                    continue
+                word_count += len(words)
 
-                encoded = tokenizer(
-                    words,
-                    is_split_into_words=True,
-                    add_special_tokens=False,
-                    return_attention_mask=False,
-                )
-
-                ids = encoded["input_ids"]
-                word_ids = encoded.word_ids()
+                # Token IDs and chars_per_token from full tokenization
+                for tid in ids:
+                    token_ids_set.add(int(tid))
 
                 tok_strs = tokenizer.convert_ids_to_tokens(ids)
-
-                for tid, wid, tstr in zip(ids, word_ids, tok_strs):
-                    if used_tokens >= common_tokens:
-                        break
-
-                    token_ids_set.add(int(tid))
-                    used_tokens += 1
-
+                for tstr in tok_strs:
                     cpt_values.append(float(len(tstr)))
 
-                    if wid is not None:
-                        global_wid = word_offset + int(wid)
-                        words_seen.add(global_wid)
-
-                word_offset += len(words)
+                used_tokens += text_tokens
 
         tokens_per_lang[lang] = used_tokens
-        words_per_lang[lang] = len(words_seen)
+        words_per_lang[lang] = word_count
         unique_tokens_per_lang[lang] = token_ids_set
         chars_per_lang[lang] = char_set
         chars_per_token_values_per_lang[lang] = cpt_values
 
         log(
-            f"  used_tokens={used_tokens}, words_used={len(words_seen)}, "
+            f"  used_tokens={used_tokens}, words_used={word_count}, "
             f"unique_tokens={len(token_ids_set)}, unique_chars={len(char_set)}"
         )
 

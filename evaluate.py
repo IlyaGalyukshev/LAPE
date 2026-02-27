@@ -109,7 +109,7 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
             messages = [
                 {
                     "role": "system",
-                    "content": "You are a helpful assistant. " + JSON_INSTRUCTIONS,
+                    "content": JSON_INSTRUCTIONS,
                 },
                 {"role": "user", "content": user_text},
             ]

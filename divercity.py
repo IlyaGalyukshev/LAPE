@@ -112,7 +112,6 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
     try:
         if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
             messages = [
-                {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": user_text},
             ]
             return tokenizer.apply_chat_template(
@@ -527,6 +526,7 @@ def main() -> None:
             tokenizer.pad_token_id = tokenizer.eos_token_id
         elif tokenizer.eos_token is not None:
             tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
 
     vocab_size = len(tokenizer)
     log(f"Vocab size: {vocab_size}")
