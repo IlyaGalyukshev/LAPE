@@ -187,7 +187,7 @@ def main() -> None:
     # -----------------------------
     model_type = model.config.model_type
 
-    if model_type in ("llama", "mistral", "qwen2", "gemma2"):
+    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
         layers = model.model.layers
     elif model_type == "gpt2":
         layers = model.transformer.h
@@ -200,7 +200,7 @@ def main() -> None:
     log_progress(f"\nModel architecture: {model_type}")
     log_progress(f"Number of layers: {num_layers}")
 
-    if model_type in ("llama", "mistral", "qwen2", "gemma2"):
+    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.gate_proj.out_features
     elif model_type == "gpt2":
@@ -225,7 +225,7 @@ def main() -> None:
     current_lang_index = 0
 
     log_progress("\nRegistering forward hooks...")
-    if model_type in ("llama", "mistral", "qwen2", "gemma2"):
+    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
 
         def make_gate_hook(layer_idx, act_fn):
             def hook(module, input, output):
