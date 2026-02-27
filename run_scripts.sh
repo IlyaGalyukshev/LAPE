@@ -10,11 +10,11 @@ fi
 export MODEL_ID="$1"
 echo "=== Running all scripts for MODEL_ID=${MODEL_ID} ==="
 
-python lape.py
-python tokenizer.py
-python logit.py
-python attention.py
-python divercity.py
-python evaluate.py
+python3 lape.py
+python3 tokenizer.py
+python3 logit.py
+python3 attention.py
+python3 divercity.py
+python3 evaluate.py
 
 echo "=== All done for MODEL_ID=${MODEL_ID} ==="
