@@ -1,11 +1,13 @@
-# main.py
+import warnings
+
+warnings.filterwarnings("ignore")
+
 import os
 import json
 import csv
-import math
 import torch
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers.utils import logging as hf_logging
@@ -16,7 +18,7 @@ hf_logging.set_verbosity_error()
 # -----------------------------
 # CONFIG
 # -----------------------------
-MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-4b-it")
+MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
 MODEL_PATH = "/hf_models"
 
 DATA_ROOT = "/work/benchmarks/TUMLU"

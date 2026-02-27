@@ -35,9 +35,6 @@ REPETITION_PENALTY = 1.0
 LOG_GREEDY_ANSWER = True
 GREEDY_MAX_NEW_TOKENS = 64
 
-# Batch prompts for throughput (effective batch = BATCH_SIZE * SAMPLES_N sequences)
-BATCH_SIZE = 2
-
 # LexicalSimilarity mode:
 LEXICAL_SIM_METRIC = "BLEU"
 
@@ -603,84 +600,8 @@ def main() -> None:
 
         used_tokens = 0
         question_idx = 0
-        buffer_model_inputs: List[str] = []
-        buffer_user_prompts: List[str] = []
-        buffer_token_lens: List[int] = []
-        buffer_question_indices: List[int] = []
 
         checkpoint_f = open(checkpoint_path, "a", encoding="utf-8")
-
-        def flush_buffer():
-            nonlocal used_tokens
-            if not buffer_model_inputs:
-                return
-
-            # 1) optional greedy answers for logging
-            if LOG_GREEDY_ANSWER:
-                for up, mi in zip(buffer_user_prompts, buffer_model_inputs):
-                    log(f"[{lang}] PROMPT:\n{up}")
-                    ans = generate_greedy_answer(
-                        model, tokenizer, mi, GREEDY_MAX_NEW_TOKENS
-                    )
-                    log(f"[{lang}] ANSWER:\n{ans}")
-
-            # 2) sampling for metrics
-            grouped_samples = generate_grouped_samples(
-                model=model,
-                tokenizer=tokenizer,
-                model_inputs_text=buffer_model_inputs,
-                samples_n=SAMPLES_N,
-                max_new_tokens=MAX_NEW_TOKENS,
-                temperature=TEMPERATURE,
-                top_p=TOP_P,
-                top_k=TOP_K,
-                repetition_penalty=REPETITION_PENALTY,
-            )
-
-            # 3) compute metrics per item
-            for idx, sample_texts in enumerate(grouped_samples):
-                lex_u = lexical_similarity_uncertainty(
-                    sample_texts, metric=LEXICAL_SIM_METRIC
-                )
-                deg_u = degmat_uncertainty(sample_texts)
-                eig_u = eigvallaplacian_uncertainty(sample_texts)
-                ecc_u = eccentricity_uncertainty(sample_texts, thres=0.9)
-
-                stats = stats_per_lang[lang]
-                stats["n_examples"] += 1
-                stats["lexical_similarity_values"].append(float(lex_u))
-                stats["degmat_values"].append(float(deg_u))
-                stats["eigvallaplacian_values"].append(float(eig_u))
-                stats["eccentricity_values"].append(float(ecc_u))
-
-                # progress
-                tok = buffer_token_lens[idx]
-                used_tokens += tok
-                stats["used_tokens"] = used_tokens
-
-                # Save checkpoint
-                rec = {
-                    "index": buffer_question_indices[idx],
-                    "language": lang,
-                    "text_tokens": tok,
-                    "lexical_similarity": float(lex_u),
-                    "degmat": float(deg_u),
-                    "eigvallaplacian": float(eig_u),
-                    "eccentricity": float(ecc_u),
-                }
-                checkpoint_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                checkpoint_f.flush()
-
-                log(
-                    f"[{lang}] METRICS: LexSim={lex_u:.6f}, DegMat={deg_u:.6f}, "
-                    f"EigValLaplacian={eig_u:.6f}, Eccentricity={ecc_u:.6f} "
-                    f"(samples_n={SAMPLES_N})"
-                )
-
-            buffer_model_inputs.clear()
-            buffer_user_prompts.clear()
-            buffer_token_lens.clear()
-            buffer_question_indices.clear()
 
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -700,12 +621,7 @@ def main() -> None:
                 token_ids = tokenizer.encode(model_input, add_special_tokens=False)
                 text_tokens = len(token_ids)
 
-                # If adding this example would exceed budget, flush what we have and stop
-                if (
-                    used_tokens + sum(buffer_token_lens) + text_tokens > common_tokens
-                    and buffer_model_inputs
-                ):
-                    flush_buffer()
+                if used_tokens + text_tokens > common_tokens:
                     break
 
                 # Resume: restore from checkpoint
@@ -729,18 +645,64 @@ def main() -> None:
                     f"[{lang}] [{question_idx}] processing example: {text_tokens} tokens, cumulative: {used_tokens}/{common_tokens}"
                 )
 
-                buffer_user_prompts.append(user_prompt)
-                buffer_model_inputs.append(model_input)
-                buffer_token_lens.append(text_tokens)
-                buffer_question_indices.append(question_idx)
+                # optional greedy answer for logging
+                if LOG_GREEDY_ANSWER:
+                    log(f"[{lang}] PROMPT:\n{user_prompt}")
+                    ans = generate_greedy_answer(
+                        model, tokenizer, model_input, GREEDY_MAX_NEW_TOKENS
+                    )
+                    log(f"[{lang}] ANSWER:\n{ans}")
 
-                # flush by batch size
-                if len(buffer_model_inputs) >= BATCH_SIZE:
-                    flush_buffer()
+                # sampling for metrics
+                grouped_samples = generate_grouped_samples(
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_inputs_text=[model_input],
+                    samples_n=SAMPLES_N,
+                    max_new_tokens=MAX_NEW_TOKENS,
+                    temperature=TEMPERATURE,
+                    top_p=TOP_P,
+                    top_k=TOP_K,
+                    repetition_penalty=REPETITION_PENALTY,
+                )
+                sample_texts = grouped_samples[0]
 
-            # flush remaining
-            if used_tokens < common_tokens:
-                flush_buffer()
+                # compute metrics
+                lex_u = lexical_similarity_uncertainty(
+                    sample_texts, metric=LEXICAL_SIM_METRIC
+                )
+                deg_u = degmat_uncertainty(sample_texts)
+                eig_u = eigvallaplacian_uncertainty(sample_texts)
+                ecc_u = eccentricity_uncertainty(sample_texts, thres=0.9)
+
+                stats = stats_per_lang[lang]
+                stats["n_examples"] += 1
+                stats["lexical_similarity_values"].append(float(lex_u))
+                stats["degmat_values"].append(float(deg_u))
+                stats["eigvallaplacian_values"].append(float(eig_u))
+                stats["eccentricity_values"].append(float(ecc_u))
+
+                used_tokens += text_tokens
+                stats["used_tokens"] = used_tokens
+
+                # Save checkpoint
+                rec = {
+                    "index": question_idx,
+                    "language": lang,
+                    "text_tokens": text_tokens,
+                    "lexical_similarity": float(lex_u),
+                    "degmat": float(deg_u),
+                    "eigvallaplacian": float(eig_u),
+                    "eccentricity": float(ecc_u),
+                }
+                checkpoint_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                checkpoint_f.flush()
+
+                log(
+                    f"[{lang}] METRICS: LexSim={lex_u:.6f}, DegMat={deg_u:.6f}, "
+                    f"EigValLaplacian={eig_u:.6f}, Eccentricity={ecc_u:.6f} "
+                    f"(samples_n={SAMPLES_N})"
+                )
 
         checkpoint_f.close()
 
