@@ -226,7 +226,14 @@ def main() -> None:
     # -----------------------------
     model_type = model.config.model_type
 
-    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3_text"):
+    if model_type in (
+        "llama",
+        "mistral",
+        "qwen2",
+        "gemma2",
+        "gemma3_text",
+        "deepseek_v3",
+    ):
         layers = model.model.layers
     elif model_type == "gemma3":
         layers = model.model.language_model.layers
@@ -244,6 +251,18 @@ def main() -> None:
     if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.gate_proj.out_features
+
+    elif model_type == "deepseek_v3":
+        sizes = []
+        for layer in layers:
+            mlp = layer.mlp
+            if hasattr(mlp, "gate_proj"):
+                sizes.append(mlp.gate_proj.out_features)
+            if hasattr(mlp, "shared_experts") and hasattr(
+                mlp.shared_experts, "gate_proj"
+            ):
+                sizes.append(mlp.shared_experts.gate_proj.out_features)
+        intermediate_size = max(sizes) if sizes else 0
 
     elif model_type == "gpt2":
         sample_mlp = layers[0].mlp
@@ -283,6 +302,33 @@ def main() -> None:
         for layer_idx, layer in enumerate(layers):
             mlp = layer.mlp
             mlp.gate_proj.register_forward_hook(make_gate_hook(layer_idx, mlp.act_fn))
+
+    elif model_type == "deepseek_v3":
+
+        def make_gate_hook_deepseek(layer_idx, act_fn):
+
+            def hook(module, input, output):
+                nonlocal current_lang_index
+                activation = act_fn(output.to(torch.float32))
+                sz = activation.shape[-1]
+                active = (activation > 0).sum(dim=(0, 1))  # (sz,)
+                over_zero[layer_idx, :sz, current_lang_index] += active.to(
+                    dtype=torch.long
+                ).cpu()
+
+            return hook
+
+        for layer_idx, layer in enumerate(layers):
+            mlp = layer.mlp
+            if hasattr(mlp, "shared_experts"):
+                shared = mlp.shared_experts
+                shared.gate_proj.register_forward_hook(
+                    make_gate_hook_deepseek(layer_idx, shared.act_fn)
+                )
+            elif hasattr(mlp, "gate_proj"):
+                mlp.gate_proj.register_forward_hook(
+                    make_gate_hook_deepseek(layer_idx, mlp.act_fn)
+                )
 
     elif model_type == "gpt2":
 
