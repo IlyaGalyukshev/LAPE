@@ -344,15 +344,17 @@ def main() -> None:
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
     log("")
 
-    # ---------- First pass: total prompt tokens per language (full corpora)
-    log("First pass: counting total prompt tokens per language (full corpora)...")
+    # ---------- First pass: count tokens per language, then determine common question budget
+    log("First pass: counting tokens and questions per language...")
     total_tokens_raw: Dict[str, int] = {}
+    question_token_counts: Dict[str, List[int]] = {}
 
     for lang in LANGS:
         path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
         log(f"[{lang}] scanning {path}")
 
         total_tokens = 0
+        q_tokens: List[int] = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -363,16 +365,33 @@ def main() -> None:
                 model_input = apply_chat_if_available(tokenizer, user_prompt)
                 token_ids = tokenizer.encode(model_input, add_special_tokens=False)
                 total_tokens += len(token_ids)
+                q_tokens.append(len(token_ids))
 
         total_tokens_raw[lang] = total_tokens
-        log(f"  total_tokens_raw = {total_tokens}")
+        question_token_counts[lang] = q_tokens
+        log(f"  total_tokens_raw = {total_tokens}, total_questions = {len(q_tokens)}")
 
     common_tokens = min(total_tokens_raw.values()) if total_tokens_raw else 0
-    log(f"\nCommon token budget per language (min over langs): {common_tokens}")
+    log(f"\nCommon token budget (min over langs): {common_tokens}")
+
+    # Count how many questions fit within common_tokens per language
+    questions_per_lang: Dict[str, int] = {}
+    for lang in LANGS:
+        used = 0
+        count = 0
+        for t in question_token_counts[lang]:
+            if used + t > common_tokens:
+                break
+            used += t
+            count += 1
+        questions_per_lang[lang] = count
+
+    common_questions = min(questions_per_lang.values()) if questions_per_lang else 0
+    log(f"Common question budget (min over langs): {common_questions}")
     log("")
 
-    # ---------- Second pass: compute metrics up to common_tokens per language
-    log("Second pass: estimating metrics (up to common_tokens per language)...")
+    # ---------- Second pass: compute metrics for exactly common_questions per language
+    log("Second pass: estimating metrics (common_questions per language)...")
 
     stats_per_lang: Dict[str, Dict[str, Any]] = {
         lang: {
@@ -388,7 +407,7 @@ def main() -> None:
     for lang in LANGS:
         path = os.path.join(DATA_ROOT, lang, "all_shuffled.jsonl")
         log(f"[{lang}] processing {path}")
-        log(f"[{lang}] target token budget: {common_tokens}")
+        log(f"[{lang}] target question budget: {common_questions}")
 
         checkpoint_path = os.path.join(OUTPUT_DIR, f"{lang}_nll_entropy.jsonl")
         os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -401,7 +420,7 @@ def main() -> None:
         with open(checkpoint_path, "a", encoding="utf-8") as out_f:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
-                    if used_tokens >= common_tokens:
+                    if question_idx >= common_questions:
                         break
 
                     line = line.strip()
@@ -413,12 +432,7 @@ def main() -> None:
                     obj = json.loads(line)
                     user_prompt = make_user_prompt(lang, obj)
                     model_input = apply_chat_if_available(tokenizer, user_prompt)
-
-                    token_ids = tokenizer.encode(model_input, add_special_tokens=False)
-                    text_tokens = int(len(token_ids))
-
-                    if used_tokens + text_tokens > common_tokens:
-                        break
+                    text_tokens = int(len(tokenizer.encode(model_input, add_special_tokens=False)))
 
                     # Resume
                     if question_idx in existing_results:
@@ -435,7 +449,7 @@ def main() -> None:
                         continue
 
                     log(
-                        f"[{lang}] [{question_idx}] example: {text_tokens} prompt tokens, cumulative: {used_tokens}/{common_tokens}"
+                        f"[{lang}] [{question_idx}/{common_questions}] example: {text_tokens} prompt tokens"
                     )
 
                     if LOG_GREEDY_ANSWER:

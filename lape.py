@@ -91,22 +91,6 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
     return prompt_template.format(question=obj["question"], choices=formatted_choices)
 
 
-def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
-    try:
-        if hasattr(tokenizer, "apply_chat_template") and getattr(
-            tokenizer, "chat_template", None
-        ):
-            messages = [
-                {"role": "user", "content": user_text},
-            ]
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-    except Exception:
-        pass
-    return user_text
-
-
 # -----------------------------
 # LAPE
 # -----------------------------
@@ -206,8 +190,7 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
-                model_input = apply_chat_if_available(tokenizer, text)
-                ids = tokenizer(model_input, add_special_tokens=False)["input_ids"]
+                ids = tokenizer(text, add_special_tokens=False)["input_ids"]
                 total += len(ids)
                 n_questions += 1
 
@@ -413,8 +396,7 @@ def main() -> None:
                         continue
                     obj = json.loads(line)
                     text = make_user_prompt(lang, obj)
-                    model_input = apply_chat_if_available(tokenizer, text)
-                    ids = tokenizer(model_input, add_special_tokens=False)["input_ids"]
+                    ids = tokenizer(text, add_special_tokens=False)["input_ids"]
                     text_tokens = len(ids)
 
                     if tokens_used + text_tokens > common_tokens:

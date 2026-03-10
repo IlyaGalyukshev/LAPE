@@ -87,22 +87,6 @@ def make_user_prompt(lang: str, obj: Dict[str, Any]) -> str:
     return prompt_template.format(question=obj["question"], choices=formatted_choices)
 
 
-def apply_chat_if_available(tokenizer, user_text: str) -> str:
-    try:
-        if hasattr(tokenizer, "apply_chat_template") and getattr(
-            tokenizer, "chat_template", None
-        ):
-            messages = [
-                {"role": "user", "content": user_text},
-            ]
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-    except Exception:
-        pass
-    return user_text
-
-
 def mean_std(values: List[float]) -> (float, float):
     vals = [v for v in values if v is not None]
     if not vals:
@@ -159,8 +143,7 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
-                model_input = apply_chat_if_available(tokenizer, text)
-                token_ids = tokenizer.encode(model_input, add_special_tokens=False)
+                token_ids = tokenizer.encode(text, add_special_tokens=False)
                 total_tokens += len(token_ids)
 
         total_tokens_raw[lang] = total_tokens
@@ -225,9 +208,8 @@ def main() -> None:
                     continue
                 obj = json.loads(line)
                 text = make_user_prompt(lang, obj)
-                model_input = apply_chat_if_available(tokenizer, text)
 
-                ids = tokenizer.encode(model_input, add_special_tokens=False)
+                ids = tokenizer.encode(text, add_special_tokens=False)
                 text_tokens = len(ids)
 
                 if used_tokens + text_tokens > common_tokens:
