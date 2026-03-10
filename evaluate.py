@@ -460,7 +460,7 @@ def main() -> None:
             log(f"[{lang}] SKIP: no eval items")
             continue
 
-        out_path = os.path.join(OUTPUT_DIR, f"{lang}_eval_1.jsonl")
+        out_path = os.path.join(OUTPUT_DIR, f"{lang}_eval.jsonl")
 
         # Load existing results to resume from where we left off
         existing_results = load_existing_results(out_path)

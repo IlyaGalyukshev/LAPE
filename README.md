@@ -130,7 +130,7 @@ All per-question results are saved incrementally in JSONL format. If a run is in
 │   ├── {lang}_graph_metrics.jsonl
 │   └── graph_metrics_summary.tsv
 └── evaluate/
-    ├── {lang}_eval_1.jsonl
+    ├── {lang}_eval.jsonl
     └── evaluate_summary.tsv
 ```
 
