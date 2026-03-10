@@ -1,4 +1,4 @@
-# LAPE: Language-Aware Probing and Evaluation
+# [paper title]
 
 A pipeline for probing large language models across 14 languages, measuring tokenization quality, neuron-level language specialization, and multiple families of uncertainty metrics.
 
