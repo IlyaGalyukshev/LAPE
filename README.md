@@ -1,19 +1,32 @@
-# Multilingual Uncertainty & Language Specialization Analysis
+# LAPE: Language-Aware Probing and Evaluation
 
-Code for the paper *"[Paper Title]"*.
+A pipeline for probing large language models across 14 languages, measuring tokenization quality, neuron-level language specialization, and multiple families of uncertainty metrics.
 
-This repository provides a pipeline for evaluating large language models across 14 languages, measuring tokenization quality, neuron-level language specialization (LAPE), and multiple families of uncertainty metrics.
+## Data
 
-## Languages
+Questions are drawn from two benchmarks:
 
-| Turkic (Latin) | Turkic (Cyrillic) | High-resource |
-|---|---|---|
-| Azerbaijani | Crimean Tatar (Cyrillic) | English |
-| Crimean Tatar | Kazakh | Russian |
-| Karakalpak | Tatar | Turkish |
-| Kazakh (Latin) | Uzbek (Cyrillic) | |
-| Uyghur (Latin) | Uyghur | |
-| Uzbek | | |
+- **[TUMLU](https://arxiv.org/abs/2502.11020)** (Isbarov et al., 2025) — a natively developed (non-translated) multiple-choice benchmark for Turkic languages covering 8 languages, 11 academic domains, and 38 139 questions. Accepted to ACL 2025.
+- **[Global MMLU](https://arxiv.org/abs/2412.03304)** (Singh et al., 2024) — a culturally aware extension of MMLU spanning 42 languages with professional translation verification. Used here for English and Russian subsets.
+
+Four TUMLU languages appear in two scripts, giving 14 language–script combinations in total:
+
+| Turkic (Latin) | Turkic (Cyrillic) | Turkic (Arabic) | High-resource |
+|---|---|---|---|
+| Azerbaijani | Crimean Tatar (Cyrillic) | Uyghur | English |
+| Crimean Tatar | Kazakh | | Russian |
+| Karakalpak | Tatar | | Turkish |
+| Kazakh (Latin) | Uzbek (Cyrillic) | | |
+| Uyghur (Latin) | | | |
+| Uzbek | | | |
+
+### Data format
+
+Each language directory contains `all_shuffled.jsonl` with one JSON object per line:
+
+```json
+{"question": "...", "choices": ["A_text", "B_text", "C_text", "D_text"], "answer": "B", "subject": "geography"}
+```
 
 ## Metrics
 
@@ -29,6 +42,8 @@ This repository provides a pipeline for evaluating large language models across 
 ### Language-Specific Neurons (`lape.py`)
 
 Identifies neurons in MLP layers that activate preferentially for specific languages. For each neuron the activation probability is computed per language, normalized, and scored by Shannon entropy. Low-entropy neurons with high activation probability are assigned to the corresponding language.
+
+For MoE architectures (e.g. DeepSeek V3), shared experts are tracked since they are active for every token.
 
 **Hyperparameters:** `TOP_RATE=0.01`, `FILTER_RATE=0.95`, `ACTIVATION_BAR_RATIO=0.95`.
 
@@ -64,22 +79,35 @@ All metrics are computed over `N=10` stochastic samples per question (`temperatu
 
 Standard multiple-choice accuracy with deterministically shuffled answer options and JSON-structured model output.
 
-## Data Format
+## Cross-Lingual Budget Equalization
 
-Each language directory contains `all_shuffled.jsonl` with one JSON object per line:
+To ensure fair comparison across languages, each script equalizes the amount of data processed. Two strategies are used depending on the script:
 
-```json
-{"question": "...", "choices": ["A_text", "B_text", "C_text", "D_text"], "answer": "B", "subject": "geography"}
-```
+### Token budget (`lape.py`, `tokenizer.py`)
 
-## Token Budget Equalization
+These scripts operate on **raw prompts without a chat template** to measure intrinsic tokenizer and neuron properties unaffected by template overhead.
 
-To ensure fair cross-lingual comparison, every script:
-1. **Pass 1** — tokenizes the full corpus for each language and records the total token count.
-2. Computes `common_tokens = min(total_tokens)` across all languages.
-3. **Pass 2** — processes questions sequentially until the accumulated token count reaches the budget.
+1. Tokenize the full corpus for each language → `total_tokens` per language.
+2. Set `common_tokens = min(total_tokens)` across all languages.
+3. Process questions sequentially until the accumulated token count reaches the budget.
 
-This guarantees that each language is evaluated on an equal amount of textual material.
+### Question budget (`logit.py`, `attention.py`, `divercity.py`)
+
+These scripts use the **chat template** (if available) for model inference, so the budget is equalized by number of questions to guarantee the same sample size per language.
+
+1. Tokenize the full corpus (with chat template) → `total_tokens` per language.
+2. Set `common_tokens = min(total_tokens)` across all languages.
+3. For each language, count how many questions fit within `common_tokens` → `questions_per_lang`.
+4. Set `common_questions = min(questions_per_lang)` across all languages.
+5. Process exactly `common_questions` questions per language.
+
+### Accuracy (`evaluate.py`)
+
+Evaluates on the full dataset for each language (no truncation).
+
+## Checkpoint & Resume
+
+All per-question results are saved incrementally in JSONL format. If a run is interrupted, re-running the same script will skip already-completed items automatically. `lape.py` and `tokenizer.py` save binary/JSON checkpoints after each language and remove them upon successful completion.
 
 ## Output Structure
 
@@ -106,17 +134,18 @@ This guarantees that each language is evaluated on an equal amount of textual ma
     └── evaluate_summary.tsv
 ```
 
-All per-question results are saved incrementally in JSONL format, enabling checkpoint-based resumption.
-
 ## Supported Architectures
 
-| Architecture | Models |
-|---|---|
-| LLaMA / Mistral | Llama-3.x, Mistral |
-| Qwen2 | Qwen2.5-xB-Instruct |
-| Gemma 2 / 3 | gemma-2-9b-it, gemma-3-{4,12,27}b-it |
-| GPT-2 | GPT-2 family |
-| BLOOM | BLOOM family |
+| Architecture | `model_type` | Models |
+|---|---|---|
+| LLaMA / Mistral | `llama`, `mistral` | Llama-3.x, Mistral |
+| Qwen 2 | `qwen2` | Qwen2.5-xB-Instruct |
+| Gemma 2 / 3 | `gemma2`, `gemma3`, `gemma3_text` | gemma-2-9b-it, gemma-3-{4,12,27}b-it |
+| DeepSeek V3 (MoE) | `deepseek_v3` | GigaChat3-10B-A1.8B |
+| GPT-2 | `gpt2` | GPT-2 family |
+| BLOOM | `bloom` | BLOOM family |
+
+Architecture-specific logic is only required in `lape.py` (layer access, MLP hook registration). All other scripts use `AutoModelForCausalLM` without architecture-specific code.
 
 ## Requirements
 
