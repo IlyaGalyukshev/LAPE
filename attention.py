@@ -317,6 +317,16 @@ def compute_focus_and_rauq_single(
         input_ids, dtype=torch.long, device=input_ids.device
     )
 
+    seq_len = input_ids.shape[1]
+    if torch.cuda.is_available():
+        dev = input_ids.device if input_ids.is_cuda else torch.device("cuda:0")
+        alloc_before = torch.cuda.memory_allocated(dev) / 1024**3
+        log_fn = globals().get("log")
+        if log_fn:
+            log_fn(
+                f"  [GPU mem before forward] seq_len={seq_len}, allocated={alloc_before:.2f} GiB on {dev}"
+            )
+
     out = model(
         input_ids=input_ids,
         attention_mask=attention_mask,
@@ -335,6 +345,16 @@ def compute_focus_and_rauq_single(
     num_heads = attentions[0].shape[1]
     L = logits.shape[1]
     V = logits.shape[2]
+
+    # DEBUG
+    if torch.cuda.is_available():
+        alloc_after = torch.cuda.memory_allocated(dev) / 1024**3
+        att_mem = num_layers * num_heads * L * L * 4 / 1024**3  # float32 estimate
+        if log_fn:
+            log_fn(
+                f"  [GPU mem after forward] allocated={alloc_after:.2f} GiB, "
+                f"attentions estimate={att_mem:.2f} GiB ({num_layers} layers, {num_heads} heads, L={L})"
+            )
 
     # indices in full sequence for generated tokens
     gen_start = prompt_len
@@ -605,6 +625,23 @@ def main() -> None:
     )
     model.eval()
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
+    # DEBUG
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            total = torch.cuda.get_device_properties(i).total_mem / 1024**3
+            alloc = torch.cuda.memory_allocated(i) / 1024**3
+            reserved = torch.cuda.memory_reserved(i) / 1024**3
+            log(
+                f"  GPU {i}: {torch.cuda.get_device_name(i)}, "
+                f"total={total:.1f} GiB, allocated={alloc:.1f} GiB, reserved={reserved:.1f} GiB"
+            )
+    if hasattr(model, "hf_device_map"):
+        dev_map = model.hf_device_map
+        from collections import Counter
+
+        dev_counts = Counter(str(v) for v in dev_map.values())
+        log(f"  device_map distribution: {dict(dev_counts)}")
+        log(f"  device_map (first 10): {dict(list(dev_map.items())[:10])}")
     log("")
 
     # ---------- First pass: count tokens and questions per language
