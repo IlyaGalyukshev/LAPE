@@ -413,18 +413,34 @@ def compute_focus_and_rauq_single(
         dim=-1
     )  # base-2 entropy
     H = torch.pow(2.0, ent2)  # 2^{entropy}
-    h = nll + H  # (gen_len,)
+    h = (nll + H).detach().cpu()  # (gen_len,) move to CPU for Focus propagation
+    p_tok = p_tok.detach().cpu()
 
-    # attention max-pooling across layers and heads
-    att_stack = torch.stack(
-        [a[0].to(dtype=torch.float32) for a in attentions], dim=0
-    )  # (layers, heads, L, L)
+    # Free GPU memory before attention processing
+    del logits, logits_pred, logp_all, p_all, p_tilde, p_hat, p_hat_tok, nll, ent2, H
 
-    # safety against any NaN/inf in attentions
-    if torch.isnan(att_stack).any() or torch.isinf(att_stack).any():
-        att_stack = torch.nan_to_num(att_stack, nan=0.0, posinf=0.0, neginf=0.0)
+    # Pre-compute RAUQ middle-third layer indices
+    mid_start = num_layers // 3
+    mid_end = int(math.ceil(num_layers * 2.0 / 3.0))
+    rauq_layer_set = set(range(mid_start, mid_end))
 
-    att_pool = torch.amax(att_stack, dim=(0, 1))  # (L, L)
+    # Single pass: incremental max-pool on CPU + cache RAUQ layers on CPU
+    att_pool = None
+    rauq_attentions: Dict[int, torch.Tensor] = {}  # layer_idx -> (heads, L, L) on CPU
+    for layer_idx, a in enumerate(attentions):
+        a_cpu = a[0].to(dtype=torch.float32, device="cpu")  # (heads, L, L)
+        a_cpu = torch.nan_to_num(a_cpu, nan=0.0, posinf=0.0, neginf=0.0)
+        layer_max = a_cpu.amax(dim=0)  # (L, L)
+        if att_pool is None:
+            att_pool = layer_max
+        else:
+            torch.maximum(att_pool, layer_max, out=att_pool)
+        if layer_idx in rauq_layer_set:
+            rauq_attentions[layer_idx] = a_cpu
+    del attentions, out
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     # restrict to generated tokens only (response r)
     att_r = att_pool[
         gen_start:gen_end, gen_start:gen_end
@@ -504,17 +520,11 @@ def compute_focus_and_rauq_single(
     # -------------------------
     # RAUQ (eq 1-4)
     # -------------------------
-    mid_start = num_layers // 3
-    mid_end = int(math.ceil(num_layers * 2.0 / 3.0))
-    layer_set = list(range(mid_start, mid_end))
-
     rauq_layer_scores: List[float] = []
     gen_positions = list(range(gen_start, gen_end))
 
-    for l in layer_set:
-        A_l = attentions[l][0].to(dtype=torch.float32)  # (heads, L, L)
-        if torch.isnan(A_l).any() or torch.isinf(A_l).any():
-            A_l = torch.nan_to_num(A_l, nan=0.0, posinf=0.0, neginf=0.0)
+    for l in sorted(rauq_attentions.keys()):
+        A_l = rauq_attentions[l]  # (heads, L, L) already float32 on CPU
 
         # head selection by mean attention to preceding token in the response (eq 1)
         if gen_len < 2:
@@ -540,19 +550,20 @@ def compute_focus_and_rauq_single(
 
         # recurrent confidence (eq 2)
         alpha = float(rauq_alpha)
-        c = torch.zeros((gen_len,), device=p_tok.device, dtype=torch.float32)
-        c[0] = p_tok[0].to(dtype=torch.float32)
+        c = torch.zeros((gen_len,), device="cpu", dtype=torch.float32)
+        c[0] = p_tok[0]
 
         if gen_len >= 2:
             for i in range(1, gen_len):
-                cur_p = p_tok[i].to(dtype=torch.float32)
-                att_w = a_prev[i - 1].to(dtype=torch.float32)
+                cur_p = p_tok[i]
+                att_w = a_prev[i - 1]
                 c[i] = alpha * cur_p + (1.0 - alpha) * att_w * c[i - 1]
 
         c = torch.clamp(c, min=eps)
         u_l = -torch.log(c).mean()  # eq 3
         rauq_layer_scores.append(float(u_l.item()))
 
+    del rauq_attentions
     rauq_score = float(np.max(rauq_layer_scores)) if rauq_layer_scores else float("nan")
     return {"Focus": focus_score, "RAUQ": rauq_score}
 
