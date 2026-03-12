@@ -8,7 +8,9 @@ if [ -z "$1" ]; then
 fi
 
 export MODEL_ID="$1"
+export MODEL_PATH="${MODEL_PATH:-/hf_models}"
 echo "=== Running all scripts for MODEL_ID=${MODEL_ID} ==="
+echo "=== MODEL_PATH=${MODEL_PATH} ==="
 
 python3 lape.py
 python3 tokenizer.py

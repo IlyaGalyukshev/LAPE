@@ -142,6 +142,7 @@ All per-question results are saved incrementally in JSONL format. If a run is in
 | Qwen 2 | `qwen2` | Qwen2.5-xB-Instruct |
 | Gemma 2 / 3 | `gemma2`, `gemma3`, `gemma3_text` | gemma-2-9b-it, gemma-3-{4,12,27}b-it |
 | DeepSeek V3 (MoE) | `deepseek_v3` | GigaChat3-10B-A1.8B |
+| Qwen 3.5 MoE | `qwen3_5_moe` | Qwen3.5-35B-A3B |
 | GPT-2 | `gpt2` | GPT-2 family |
 | BLOOM | `bloom` | BLOOM family |
 

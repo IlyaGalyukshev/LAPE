@@ -23,7 +23,7 @@ hf_logging.set_verbosity_error()
 # CONFIG
 # -----------------------------
 MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = os.environ.get("MODEL_PATH", "/hf_models")
 
 DATA_ROOT = "/work/benchmarks/TUMLU"  # /work/benchmarks is storage mount
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -113,9 +113,10 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
                 },
                 {"role": "user", "content": user_text},
             ]
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            kwargs = dict(tokenize=False, add_generation_prompt=True)
+            if "enable_thinking" in (tokenizer.chat_template or ""):
+                kwargs["enable_thinking"] = False
+            return tokenizer.apply_chat_template(messages, **kwargs)
     except Exception:
         pass
     return JSON_INSTRUCTIONS + "\n" + user_text

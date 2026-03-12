@@ -22,7 +22,7 @@ hf_logging.set_verbosity_error()
 # CONFIG
 # -----------------------------
 MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
-MODEL_PATH = "/hf_models"
+MODEL_PATH = os.environ.get("MODEL_PATH", "/hf_models")
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -106,9 +106,11 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
             messages = [
                 {"role": "user", "content": user_text},
             ]
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            kwargs = dict(tokenize=False, add_generation_prompt=True)
+            # Disable thinking mode for models that support it (e.g. Qwen3.5)
+            if "enable_thinking" in (tokenizer.chat_template or ""):
+                kwargs["enable_thinking"] = False
+            return tokenizer.apply_chat_template(messages, **kwargs)
     except Exception:
         pass
     return user_text

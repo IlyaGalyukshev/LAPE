@@ -20,7 +20,7 @@ hf_logging.set_verbosity_error()
 # CONFIG
 # -----------------------------
 MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
-MODEL_PATH = "/hf_models"
+MODEL_PATH = os.environ.get("MODEL_PATH", "/hf_models")
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -216,6 +216,8 @@ def main() -> None:
         "gemma2",
         "gemma3_text",
         "deepseek_v3",
+        "qwen3_5_moe_text",
+        "qwen3_5_moe",
     ):
         layers = model.model.layers
     elif model_type == "gemma3":
@@ -234,6 +236,11 @@ def main() -> None:
     if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.gate_proj.out_features
+
+    elif model_type in ("qwen3_5_moe", "qwen3_5_moe_text"):
+        # All layers are MoE with shared_expert (gate_proj.out_features = shared_expert_intermediate_size)
+        sample_mlp = layers[0].mlp
+        intermediate_size = sample_mlp.shared_expert.gate_proj.out_features
 
     elif model_type == "deepseek_v3":
         sizes = []
@@ -286,9 +293,9 @@ def main() -> None:
             mlp = layer.mlp
             mlp.gate_proj.register_forward_hook(make_gate_hook(layer_idx, mlp.act_fn))
 
-    elif model_type == "deepseek_v3":
+    elif model_type in ("deepseek_v3", "qwen3_5_moe", "qwen3_5_moe_text"):
 
-        def make_gate_hook_deepseek(layer_idx, act_fn):
+        def make_gate_hook_moe(layer_idx, act_fn):
 
             def hook(module, input, output):
                 nonlocal current_lang_index
@@ -303,14 +310,20 @@ def main() -> None:
 
         for layer_idx, layer in enumerate(layers):
             mlp = layer.mlp
-            if hasattr(mlp, "shared_experts"):
+            # DeepSeek V3: shared_experts; Qwen3.5 MoE: shared_expert (no 's')
+            if hasattr(mlp, "shared_expert") and hasattr(mlp.shared_expert, "gate_proj"):
+                shared = mlp.shared_expert
+                shared.gate_proj.register_forward_hook(
+                    make_gate_hook_moe(layer_idx, shared.act_fn)
+                )
+            elif hasattr(mlp, "shared_experts") and hasattr(mlp.shared_experts, "gate_proj"):
                 shared = mlp.shared_experts
                 shared.gate_proj.register_forward_hook(
-                    make_gate_hook_deepseek(layer_idx, shared.act_fn)
+                    make_gate_hook_moe(layer_idx, shared.act_fn)
                 )
             elif hasattr(mlp, "gate_proj"):
                 mlp.gate_proj.register_forward_hook(
-                    make_gate_hook_deepseek(layer_idx, mlp.act_fn)
+                    make_gate_hook_moe(layer_idx, mlp.act_fn)
                 )
 
     elif model_type == "gpt2":

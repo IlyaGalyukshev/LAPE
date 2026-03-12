@@ -22,7 +22,7 @@ hf_logging.set_verbosity_error()
 # CONFIG
 # -----------------------------
 MODEL_ID = os.environ.get("MODEL_ID", "google/gemma-3-12b-it")
-MODEL_PATH = "/hf_models"  # mounted from model_registry
+MODEL_PATH = os.environ.get("MODEL_PATH", "/hf_models")
 
 DATA_ROOT = "/work/benchmarks/TUMLU"
 OUTPUT_BASE = "/work/benchmarks/uncertainty_metrics"
@@ -117,9 +117,10 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
             messages = [
                 {"role": "user", "content": user_text},
             ]
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            kwargs = dict(tokenize=False, add_generation_prompt=True)
+            if "enable_thinking" in (tokenizer.chat_template or ""):
+                kwargs["enable_thinking"] = False
+            return tokenizer.apply_chat_template(messages, **kwargs)
     except Exception:
         pass
     return user_text
@@ -639,7 +640,7 @@ def main() -> None:
     # DEBUG
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
-            total = torch.cuda.get_device_properties(i).total_mem / 1024**3
+            total = torch.cuda.get_device_properties(i).total_memory / 1024**3
             alloc = torch.cuda.memory_allocated(i) / 1024**3
             reserved = torch.cuda.memory_reserved(i) / 1024**3
             log(
