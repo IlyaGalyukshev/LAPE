@@ -107,7 +107,6 @@ def apply_chat_if_available(tokenizer: AutoTokenizer, user_text: str) -> str:
                 {"role": "user", "content": user_text},
             ]
             kwargs = dict(tokenize=False, add_generation_prompt=True)
-            # Disable thinking mode for models that support it (e.g. Qwen3.5)
             if "enable_thinking" in (tokenizer.chat_template or ""):
                 kwargs["enable_thinking"] = False
             return tokenizer.apply_chat_template(messages, **kwargs)
@@ -197,7 +196,7 @@ def generate_greedy_single(
     if tokenizer.eos_token_id is not None and gen_len > 0:
         eos_pos = (gen_part == tokenizer.eos_token_id).nonzero(as_tuple=False)
         if eos_pos.numel() > 0:
-            gen_len = int(eos_pos[0].item()) + 1  # include EOS
+            gen_len = int(eos_pos[0].item()) + 1
 
     full_seq = out[: prompt_len + gen_len]
     return full_seq, prompt_len, gen_len
@@ -210,7 +209,7 @@ def generate_greedy_single(
 def compute_metrics_single(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    full_seq: torch.Tensor,  # (L,)
+    full_seq: torch.Tensor,
     prompt_len: int,
     gen_len: int,
 ) -> Dict[str, float]:
@@ -228,7 +227,7 @@ def compute_metrics_single(
             "MeanTokenEntropy": float("nan"),
         }
 
-    input_ids = full_seq.unsqueeze(0)  # (1, L)
+    input_ids = full_seq.unsqueeze(0)
     attention_mask = torch.ones_like(
         input_ids, dtype=torch.long, device=input_ids.device
     )
@@ -241,11 +240,8 @@ def compute_metrics_single(
         output_hidden_states=False,
         return_dict=True,
     )
-    logits = outputs.logits.to(dtype=torch.float32)  # (1, L, V)
+    logits = outputs.logits.to(dtype=torch.float32)
 
-    # Predictions for generated tokens:
-    # target positions: [prompt_len .. prompt_len+gen_len-1]
-    # logits positions:  [prompt_len-1 .. prompt_len+gen_len-2]
     gen_start = prompt_len
     gen_end = prompt_len + gen_len
     pred_start = gen_start - 1
@@ -258,22 +254,17 @@ def compute_metrics_single(
             "MeanTokenEntropy": float("nan"),
         }
 
-    logits_pred = logits[0, pred_start:pred_end, :]  # (gen_len, V)
-    target = input_ids[0, gen_start:gen_end].to(dtype=torch.long)  # (gen_len,)
+    logits_pred = logits[0, pred_start:pred_end, :]
+    target = input_ids[0, gen_start:gen_end].to(dtype=torch.long)
 
-    logp_all = torch.log_softmax(logits_pred, dim=-1)  # (gen_len, V)
-    logp_t = logp_all.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(
-        -1
-    )  # (gen_len,)
+    logp_all = torch.log_softmax(logits_pred, dim=-1)
+    logp_t = logp_all.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
 
     logp_np = logp_t.detach().cpu().numpy().astype(np.float64)
 
-    # MeanTokenNLL = -mean(log_likelihoods)
     mean_nll_val = float(-np.mean(logp_np))
-    # SequenceNLL = -sum(log_likelihoods)
     seq_nll_val = float(-np.sum(logp_np))
 
-    # Entropy per token: -sum p log p
     p_all = torch.exp(logp_all)
     entropy_t = -(p_all * logp_all).sum(dim=-1)  # (gen_len,)
     entropy_np = entropy_t.detach().cpu().numpy().astype(np.float64)
@@ -346,7 +337,6 @@ def main() -> None:
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
     log("")
 
-    # ---------- First pass: count tokens per language, then determine common question budget
     log("First pass: counting tokens and questions per language...")
     total_tokens_raw: Dict[str, int] = {}
     question_token_counts: Dict[str, List[int]] = {}
@@ -376,7 +366,6 @@ def main() -> None:
     common_tokens = min(total_tokens_raw.values()) if total_tokens_raw else 0
     log(f"\nCommon token budget (min over langs): {common_tokens}")
 
-    # Count how many questions fit within common_tokens per language
     questions_per_lang: Dict[str, int] = {}
     for lang in LANGS:
         used = 0
@@ -392,7 +381,6 @@ def main() -> None:
     log(f"Common question budget (min over langs): {common_questions}")
     log("")
 
-    # ---------- Second pass: compute metrics for exactly common_questions per language
     log("Second pass: estimating metrics (common_questions per language)...")
 
     stats_per_lang: Dict[str, Dict[str, Any]] = {
@@ -434,7 +422,9 @@ def main() -> None:
                     obj = json.loads(line)
                     user_prompt = make_user_prompt(lang, obj)
                     model_input = apply_chat_if_available(tokenizer, user_prompt)
-                    text_tokens = int(len(tokenizer.encode(model_input, add_special_tokens=False)))
+                    text_tokens = int(
+                        len(tokenizer.encode(model_input, add_special_tokens=False))
+                    )
 
                     # Resume
                     if question_idx in existing_results:
@@ -457,7 +447,6 @@ def main() -> None:
                     if LOG_GREEDY_ANSWER:
                         log(f"[{lang}] PROMPT:\n{user_prompt}")
 
-                    # one greedy generation per request
                     full_seq, prompt_len, gen_len = generate_greedy_single(
                         model=model,
                         tokenizer=tokenizer,
@@ -494,7 +483,6 @@ def main() -> None:
                     used_tokens += text_tokens
                     st["used_tokens"] = used_tokens
 
-                    # Save checkpoint
                     rec = {
                         "index": question_idx,
                         "language": lang,
@@ -514,7 +502,6 @@ def main() -> None:
                     )
                     log("")
 
-                    # Periodic memory cleanup every 10 questions
                     if question_idx % 10 == 0:
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -525,11 +512,9 @@ def main() -> None:
         )
         log("")
 
-        # Clean up memory after each language
         gc.collect()
         torch.cuda.empty_cache()
 
-    # ---------- Save summary
     output_path = os.path.join(OUTPUT_DIR, "nll_entropy_summary.tsv")
     log(f"Saving aggregated metrics to {output_path}")
 

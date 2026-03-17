@@ -32,11 +32,10 @@ TOP_P = 0.95
 TOP_K = 0  # 0 => disabled
 REPETITION_PENALTY = 1.0
 
-# Optional: greedy answer for logging (doesn't affect the metrics)
+# Optional: greedy answer for logging
 LOG_GREEDY_ANSWER = True
 GREEDY_MAX_NEW_TOKENS = 64
 
-# LexicalSimilarity mode:
 LEXICAL_SIM_METRIC = "BLEU"
 
 
@@ -154,7 +153,6 @@ def generate_grouped_samples(
         model.device
     )
 
-    # true prompt lengths per sample (avoid padding-length bug)
     prompt_lens = attention_mask.sum(dim=1).tolist()
 
     gen_kwargs = dict(
@@ -173,28 +171,23 @@ def generate_grouped_samples(
     if top_k and top_k > 0:
         gen_kwargs["top_k"] = int(top_k)
 
-    # generate: (batch*samples_n, seq_len_total)
     out = model.generate(
         input_ids=input_ids,
         attention_mask=attention_mask,
         **gen_kwargs,
     )
 
-    # regroup outputs
     batch_size = len(model_inputs_text)
     grouped: List[List[str]] = [[] for _ in range(batch_size)]
 
-    # out is stacked by prompt: for each input, it returns `samples_n` sequences
-    # In HF generation, ordering is: [x0_s0, x0_s1, ... x0_sN, x1_s0, ...]
     for i in range(batch_size):
         base = i * samples_n
         p_len = int(prompt_lens[i])
 
         for j in range(samples_n):
             seq = out[base + j]
-            gen_tokens = seq[p_len:]  # tokens after prompt
+            gen_tokens = seq[p_len:]
 
-            # stop at first EOS
             if tokenizer.eos_token_id is not None:
                 eos_positions = (gen_tokens == tokenizer.eos_token_id).nonzero(
                     as_tuple=False
@@ -330,13 +323,11 @@ def sentence_bleu_like_lm_polygraph(
         weights = [0.25, 0.25, 0.25, 0.25]
         max_n = 4
 
-    # geometric mean of modified precisions
     precisions = []
     for n in range(1, max_n + 1):
         p_n = _modified_precision(reference, candidate, n)
         precisions.append(p_n)
 
-    # If any precision is 0, BLEU becomes 0
     if any(p == 0.0 for p in precisions):
         return 0.0
 
@@ -411,7 +402,6 @@ def eigvallaplacian_uncertainty(sample_texts: List[str]) -> float:
 
 
 def floyd_warshall_all_pairs(dist: np.ndarray) -> np.ndarray:
-    # dist: (n,n) with np.inf allowed
     n = dist.shape[0]
     d = dist.copy()
     for k in range(n):
@@ -434,8 +424,6 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
     eigvals_kept = eigvals[keep_mask]
     eigvecs_kept = eigvecs[:, keep_mask]
 
-    # C_Ecc_s_j = smallest_eigenvectors.T @ smallest_eigenvectors
-    # Then C_sim = max(0, C) and D_ecc = -log(C_sim)
     if eigvecs_kept.size == 0:
         return float("nan")
 
@@ -447,7 +435,6 @@ def eccentricity_uncertainty(sample_texts: List[str], thres: float = 0.9) -> flo
 
     sp = floyd_warshall_all_pairs(D_ecc)
 
-    # eccentricity per node: max shortest-path distance from node
     ecc_per_node = np.max(sp, axis=1)
     return float(np.mean(ecc_per_node))
 
@@ -548,7 +535,6 @@ def main() -> None:
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
     log("")
 
-    # ---------- First pass: count tokens and questions per language
     log("First pass: counting tokens and questions per language...")
     total_tokens_raw: Dict[str, int] = {}
     question_token_counts: Dict[str, List[int]] = {}
@@ -578,7 +564,6 @@ def main() -> None:
     common_tokens = min(total_tokens_raw.values()) if total_tokens_raw else 0
     log(f"\nCommon token budget (min over langs): {common_tokens}")
 
-    # Count how many questions fit within common_tokens per language
     questions_per_lang: Dict[str, int] = {}
     for lang in LANGS:
         used = 0
@@ -594,7 +579,6 @@ def main() -> None:
     log(f"Common question budget (min over langs): {common_questions}")
     log("")
 
-    # ---------- Second pass: compute metrics for common_questions per language
     log("Second pass: estimating metrics (common_questions per language)...")
 
     stats_per_lang: Dict[str, Dict[str, Any]] = {
@@ -638,9 +622,10 @@ def main() -> None:
                 obj = json.loads(line)
                 user_prompt = make_user_prompt(lang, obj)
                 model_input = apply_chat_if_available(tokenizer, user_prompt)
-                text_tokens = int(len(tokenizer.encode(model_input, add_special_tokens=False)))
+                text_tokens = int(
+                    len(tokenizer.encode(model_input, add_special_tokens=False))
+                )
 
-                # Resume: restore from checkpoint
                 if question_idx in existing_results:
                     rec = existing_results[question_idx]
                     stats = stats_per_lang[lang]
@@ -661,7 +646,6 @@ def main() -> None:
                     f"[{lang}] [{question_idx}/{common_questions}] processing example: {text_tokens} tokens"
                 )
 
-                # optional greedy answer for logging
                 if LOG_GREEDY_ANSWER:
                     log(f"[{lang}] PROMPT:\n{user_prompt}")
                     ans = generate_greedy_answer(
@@ -669,7 +653,6 @@ def main() -> None:
                     )
                     log(f"[{lang}] ANSWER:\n{ans}")
 
-                # sampling for metrics
                 grouped_samples = generate_grouped_samples(
                     model=model,
                     tokenizer=tokenizer,
@@ -683,7 +666,6 @@ def main() -> None:
                 )
                 sample_texts = grouped_samples[0]
 
-                # compute metrics
                 lex_u = lexical_similarity_uncertainty(
                     sample_texts, metric=LEXICAL_SIM_METRIC
                 )
@@ -701,7 +683,6 @@ def main() -> None:
                 used_tokens += text_tokens
                 stats["used_tokens"] = used_tokens
 
-                # Save checkpoint
                 rec = {
                     "index": question_idx,
                     "language": lang,
@@ -720,7 +701,6 @@ def main() -> None:
                     f"(samples_n={SAMPLES_N})"
                 )
 
-                # Periodic memory cleanup every 10 questions
                 if question_idx % 10 == 0:
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -758,11 +738,9 @@ def main() -> None:
         )
         log("")
 
-        # Clean up memory after each language
         gc.collect()
         torch.cuda.empty_cache()
 
-    # ---------- Save summary
     output_path = os.path.join(OUTPUT_DIR, "graph_metrics_summary.tsv")
     log(f"Saving aggregated metrics to {output_path}")
 

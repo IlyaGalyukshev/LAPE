@@ -168,12 +168,10 @@ def parse_json_response(text: str) -> Tuple[Optional[str], Optional[str]]:
     """
     text = text.strip().replace("\\", "")
 
-    # Try to extract JSON from markdown code blocks
     markdown_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if markdown_match:
         text = markdown_match.group(1)
 
-    # Try to find JSON in the response
     start = text.find("{")
     if start != -1:
         brace_count = 0
@@ -449,7 +447,6 @@ def main() -> None:
             log(f"[{lang}] SKIP: empty dataset")
             continue
 
-        # Prepare eval items (no few-shot, direct evaluation)
         eval_items: List[Tuple[str, Dict[str, Any]]] = []
         for obj in data:
             subj = obj.get("subject", obj.get("category", ""))
@@ -463,7 +460,6 @@ def main() -> None:
 
         out_path = os.path.join(OUTPUT_DIR, f"{lang}_eval.jsonl")
 
-        # Load existing results to resume from where we left off
         existing_results = load_existing_results(out_path)
 
         log(f"[{lang}] eval_items={n}")
@@ -554,7 +550,6 @@ def main() -> None:
                 out_f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 out_f.flush()
 
-                # Periodic memory cleanup every 10 questions
                 if i % 10 == 0:
                     gc.collect()
                     torch.cuda.empty_cache()
@@ -569,11 +564,9 @@ def main() -> None:
             "accuracy": acc,
         }
 
-        # Clean up memory after each language
         gc.collect()
         torch.cuda.empty_cache()
 
-    # ---------- Save summary TSV
     summary_path = os.path.join(OUTPUT_DIR, "evaluate_summary.tsv")
     log(f"Saving summary to {summary_path}")
 

@@ -170,9 +170,6 @@ def main() -> None:
                 f"dir(model.model.language_model) = {[a for a in dir(model.model.language_model) if not a.startswith('_')]}"
             )
 
-    # -----------------------------
-    # Pass 1: count tokens per language and find minimum
-    # -----------------------------
     lang_token_counts: Dict[str, int] = {}
     min_tokens = None
 
@@ -204,9 +201,6 @@ def main() -> None:
     common_tokens = int(min_tokens or 0)
     log_progress(f"\nMinimum tokens across all languages: {common_tokens}")
 
-    # -----------------------------
-    # Model architecture mapping
-    # -----------------------------
     model_type = model.config.model_type
 
     if model_type in (
@@ -218,6 +212,7 @@ def main() -> None:
         "deepseek_v3",
         "qwen3_5_moe_text",
         "qwen3_5_moe",
+        "qwen3_5_text",
     ):
         layers = model.model.layers
     elif model_type == "gemma3":
@@ -233,12 +228,19 @@ def main() -> None:
     log_progress(f"\nModel architecture: {model_type}")
     log_progress(f"Number of layers: {num_layers}")
 
-    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
+    if model_type in (
+        "llama",
+        "mistral",
+        "qwen2",
+        "gemma2",
+        "gemma3",
+        "gemma3_text",
+        "qwen3_5_text",
+    ):
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.gate_proj.out_features
 
     elif model_type in ("qwen3_5_moe", "qwen3_5_moe_text"):
-        # All layers are MoE with shared_expert (gate_proj.out_features = shared_expert_intermediate_size)
         sample_mlp = layers[0].mlp
         intermediate_size = sample_mlp.shared_expert.gate_proj.out_features
 
@@ -275,7 +277,15 @@ def main() -> None:
     current_lang_index = 0
 
     log_progress("\nRegistering forward hooks...")
-    if model_type in ("llama", "mistral", "qwen2", "gemma2", "gemma3", "gemma3_text"):
+    if model_type in (
+        "llama",
+        "mistral",
+        "qwen2",
+        "gemma2",
+        "gemma3",
+        "gemma3_text",
+        "qwen3_5_text",
+    ):
 
         def make_gate_hook(layer_idx, act_fn):
 
@@ -310,13 +320,16 @@ def main() -> None:
 
         for layer_idx, layer in enumerate(layers):
             mlp = layer.mlp
-            # DeepSeek V3: shared_experts; Qwen3.5 MoE: shared_expert (no 's')
-            if hasattr(mlp, "shared_expert") and hasattr(mlp.shared_expert, "gate_proj"):
+            if hasattr(mlp, "shared_expert") and hasattr(
+                mlp.shared_expert, "gate_proj"
+            ):
                 shared = mlp.shared_expert
                 shared.gate_proj.register_forward_hook(
                     make_gate_hook_moe(layer_idx, shared.act_fn)
                 )
-            elif hasattr(mlp, "shared_experts") and hasattr(mlp.shared_experts, "gate_proj"):
+            elif hasattr(mlp, "shared_experts") and hasattr(
+                mlp.shared_experts, "gate_proj"
+            ):
                 shared = mlp.shared_experts
                 shared.gate_proj.register_forward_hook(
                     make_gate_hook_moe(layer_idx, shared.act_fn)
@@ -362,9 +375,6 @@ def main() -> None:
 
     log_progress(f"Hooks registered for all {num_layers} layers")
 
-    # -----------------------------
-    # Pass 2: feed questions to model
-    # -----------------------------
     log_progress("\n" + "=" * 80)
     log_progress("Collecting neuron activations (pass 2)...")
     log_progress("=" * 80)
@@ -431,7 +441,6 @@ def main() -> None:
                             f"{tokens_used}/{common_tokens} tokens "
                             f"({tokens_used / common_tokens * 100:.1f}%)"
                         )
-                        # Periodic memory cleanup every 10 questions
                         gc.collect()
                         torch.cuda.empty_cache()
 
@@ -440,11 +449,9 @@ def main() -> None:
                 f"  - Done: {n_questions} questions, {tokens_used}/{common_tokens} tokens"
             )
 
-            # Clean up memory after each language
             gc.collect()
             torch.cuda.empty_cache()
 
-            # Save checkpoint after each language
             completed_lang_indices.append(lang_idx)
             torch.save(
                 {
@@ -649,7 +656,6 @@ def main() -> None:
     log_progress(f"Saving language-specific neurons to: {mask_path}")
     torch.save(mask_data, mask_path)
 
-    # Save TSV summary
     summary_path = os.path.join(OUTPUT_DIR, "lape_summary.tsv")
     log_progress(f"Saving summary to: {summary_path}")
 
@@ -677,7 +683,6 @@ def main() -> None:
                 ]
             )
 
-    # Remove checkpoint after successful save
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
         log_progress("Checkpoint removed (run completed successfully)")

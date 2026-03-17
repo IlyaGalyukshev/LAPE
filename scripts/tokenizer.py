@@ -164,7 +164,6 @@ def main() -> None:
     chars_per_lang: Dict[str, Set[str]] = {}
     chars_per_token_values_per_lang: Dict[str, List[float]] = {}
 
-    # Load checkpoint if exists
     completed_langs: List[str] = []
     if os.path.exists(checkpoint_path):
         log(f"Loading checkpoint from {checkpoint_path}...")
@@ -215,13 +214,11 @@ def main() -> None:
                 if used_tokens + text_tokens > common_tokens:
                     break
 
-                # Chars and words from user prompt (language content)
                 for ch in text:
                     char_set.add(ch)
                 words = text.strip().split()
                 word_count += len(words)
 
-                # Token IDs and chars_per_token from full tokenization
                 for tid in ids:
                     token_ids_set.add(int(tid))
 
@@ -242,7 +239,6 @@ def main() -> None:
             f"unique_tokens={len(token_ids_set)}, unique_chars={len(char_set)}"
         )
 
-        # Save checkpoint after each language
         completed_langs.append(lang)
         ckpt_data = {
             "completed_langs": completed_langs,
@@ -375,7 +371,6 @@ def main() -> None:
             tsv_row = {k: row[k] for k in fieldnames}
             writer.writerow(tsv_row)
 
-    # Remove checkpoint after successful save
     if os.path.exists(checkpoint_path):
         os.remove(checkpoint_path)
         log("Checkpoint removed (run completed successfully)")

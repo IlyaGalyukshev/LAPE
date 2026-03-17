@@ -12,11 +12,11 @@ export MODEL_PATH="${MODEL_PATH:-/hf_models}"
 echo "=== Running all scripts for MODEL_ID=${MODEL_ID} ==="
 echo "=== MODEL_PATH=${MODEL_PATH} ==="
 
-python3 lape.py
-python3 tokenizer.py
-python3 logit.py
-python3 attention.py
-python3 divercity.py
-python3 evaluate.py
+python3 scripts/lape.py
+python3 scripts/tokenizer.py
+python3 scripts/logit.py
+python3 scripts/attention.py
+python3 scripts/divercity.py
+python3 scripts/evaluate.py
 
 echo "=== All done for MODEL_ID=${MODEL_ID} ==="

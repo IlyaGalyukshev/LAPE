@@ -6,6 +6,6 @@ __pycache__/
 *.out
 *.ipynb
 *.png
-*.csv
+.csv
 /uncertainty_metrics
 /postprocessing

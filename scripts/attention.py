@@ -38,11 +38,11 @@ FOCUS_RHO = 0.01
 # mark tokens whose IDF is >= quantile among generated tokens
 FOCUS_KW_IDF_QUANTILE = 0.75
 
-# IDF computed per-language, only from that language file (independent across languages)
+# IDF computed per-language, only from that language file
 IDF_MAX_DOCS = -1  # -1 => all docs of language file
 
 # RAUQ hyperparams:
-RAUQ_ALPHA = 0.2  # in RAUQ paper: alpha=0.2 for QA-type tasks; robust single hyperparam
+RAUQ_ALPHA = 0.2  # in RAUQ paper: alpha=0.2 for QA-type tasks
 
 LANGS = [
     "azerbaijani",
@@ -217,7 +217,6 @@ def compute_or_load_idf_for_lang(
                     df[tid] += 1
 
     if N <= 0:
-        # fallback: all ones (no effect)
         idf = np.ones((vocab_size,), dtype=np.float32)
     else:
         idf = np.log((N + 1.0) / (df.astype(np.float64) + 1.0)).astype(np.float32)
@@ -279,23 +278,23 @@ def generate_greedy_single(
     if tokenizer.eos_token_id is not None and gen_len > 0:
         eos_pos = (gen_part == tokenizer.eos_token_id).nonzero(as_tuple=False)
         if eos_pos.numel() > 0:
-            gen_len = int(eos_pos[0].item()) + 1  # include EOS
+            gen_len = int(eos_pos[0].item()) + 1
 
     full_seq = out[: prompt_len + gen_len]
     return full_seq, prompt_len, gen_len
 
 
 # -----------------------------
-# Focus (language-agnostic keywords via IDF quantile) + RAUQ
+# Focus + RAUQ
 # -----------------------------
 @torch.inference_mode()
 def compute_focus_and_rauq_single(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
-    full_seq: torch.Tensor,  # (L,)
+    full_seq: torch.Tensor,
     prompt_len: int,
     gen_len: int,
-    idf_t: torch.Tensor,  # (V,) float32 on model.device
+    idf_t: torch.Tensor,
     focus_gamma: float,
     focus_rho: float,
     focus_kw_idf_quantile: float,
@@ -336,7 +335,7 @@ def compute_focus_and_rauq_single(
         return_dict=True,
     )
 
-    logits = out.logits.to(dtype=torch.float32)  # (1, L, V)
+    logits = out.logits.to(dtype=torch.float32)
 
     attentions = out.attentions
     if attentions is None or len(attentions) == 0:
@@ -350,14 +349,13 @@ def compute_focus_and_rauq_single(
     # DEBUG
     if torch.cuda.is_available():
         alloc_after = torch.cuda.memory_allocated(dev) / 1024**3
-        att_mem = num_layers * num_heads * L * L * 4 / 1024**3  # float32 estimate
+        att_mem = num_layers * num_heads * L * L * 4 / 1024**3
         if log_fn:
             log_fn(
                 f"  [GPU mem after forward] allocated={alloc_after:.2f} GiB, "
                 f"attentions estimate={att_mem:.2f} GiB ({num_layers} layers, {num_heads} heads, L={L})"
             )
 
-    # indices in full sequence for generated tokens
     gen_start = prompt_len
     gen_end = prompt_len + gen_len
     if gen_end > L:
@@ -366,22 +364,21 @@ def compute_focus_and_rauq_single(
     if gen_len <= 0:
         return {"Focus": float("nan"), "RAUQ": float("nan")}
 
-    # probabilities for each generated token: positions predicted by logits at [gen_start-1 .. gen_end-2]
     pred_start = gen_start - 1
     pred_end = gen_end - 1
     if pred_start < 0 or pred_end <= pred_start:
         return {"Focus": float("nan"), "RAUQ": float("nan")}
 
-    logits_pred = logits[0, pred_start:pred_end, :]  # (gen_len, V)
-    target = input_ids[0, gen_start:gen_end].to(dtype=torch.long)  # (gen_len,)
+    logits_pred = logits[0, pred_start:pred_end, :]
+    target = input_ids[0, gen_start:gen_end].to(dtype=torch.long)
 
-    logp_all = torch.log_softmax(logits_pred, dim=-1)  # (gen_len, V)
-    p_all = torch.exp(logp_all)  # (gen_len, V)
-    p_tok = p_all.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)  # (gen_len,)
+    logp_all = torch.log_softmax(logits_pred, dim=-1)
+    p_all = torch.exp(logp_all)
+    p_tok = p_all.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
     p_tok = torch.clamp(p_tok, min=eps)
 
     # -------------------------
-    # Focus probability correction: candidate set via rho, then IDF reweighting
+    # Focus probability correction
     # -------------------------
     p_tilde = p_all.clone()
     p_tilde = torch.where(p_tilde >= focus_rho, p_tilde, torch.zeros_like(p_tilde))
@@ -393,7 +390,6 @@ def compute_focus_and_rauq_single(
 
     p_tilde = p_tilde / torch.clamp(denom, min=eps)
 
-    # apply IDF (eq 8)
     if idf_t.shape[0] != V:
         p_hat = p_tilde
     else:
@@ -405,33 +401,27 @@ def compute_focus_and_rauq_single(
             denom2 = p_idf.sum(dim=-1, keepdim=True)
         p_hat = p_idf / torch.clamp(denom2, min=eps)
 
-    # Focus token score hi = -log p_hat(t_i) + H_i, with H_i = 2^{entropy_base2}
     p_hat_tok = p_hat.gather(dim=-1, index=target.unsqueeze(-1)).squeeze(-1)
     p_hat_tok = torch.clamp(p_hat_tok, min=eps)
-    nll = -torch.log(p_hat_tok)  # natural log
+    nll = -torch.log(p_hat_tok)
 
-    ent2 = -(p_hat * torch.log2(torch.clamp(p_hat, min=eps))).sum(
-        dim=-1
-    )  # base-2 entropy
-    H = torch.pow(2.0, ent2)  # 2^{entropy}
-    h = (nll + H).detach().cpu()  # (gen_len,) move to CPU for Focus propagation
+    ent2 = -(p_hat * torch.log2(torch.clamp(p_hat, min=eps))).sum(dim=-1)
+    H = torch.pow(2.0, ent2)
+    h = (nll + H).detach().cpu()
     p_tok = p_tok.detach().cpu()
 
-    # Free GPU memory before attention processing
     del logits, logits_pred, logp_all, p_all, p_tilde, p_hat, p_hat_tok, nll, ent2, H
 
-    # Pre-compute RAUQ middle-third layer indices
     mid_start = num_layers // 3
     mid_end = int(math.ceil(num_layers * 2.0 / 3.0))
     rauq_layer_set = set(range(mid_start, mid_end))
 
-    # Single pass: incremental max-pool on CPU + cache RAUQ layers on CPU
     att_pool = None
-    rauq_attentions: Dict[int, torch.Tensor] = {}  # layer_idx -> (heads, L, L) on CPU
+    rauq_attentions: Dict[int, torch.Tensor] = {}
     for layer_idx, a in enumerate(attentions):
-        a_cpu = a[0].to(dtype=torch.float32, device="cpu")  # (heads, L, L)
+        a_cpu = a[0].to(dtype=torch.float32, device="cpu")
         a_cpu = torch.nan_to_num(a_cpu, nan=0.0, posinf=0.0, neginf=0.0)
-        layer_max = a_cpu.amax(dim=0)  # (L, L)
+        layer_max = a_cpu.amax(dim=0)
         if att_pool is None:
             att_pool = layer_max
         else:
@@ -442,14 +432,8 @@ def compute_focus_and_rauq_single(
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    # restrict to generated tokens only (response r)
-    att_r = att_pool[
-        gen_start:gen_end, gen_start:gen_end
-    ].contiguous()  # (gen_len, gen_len)
+    att_r = att_pool[gen_start:gen_end, gen_start:gen_end].contiguous()
 
-    # -------------------------
-    # Focus keywords (no spaCy): top-IDF quantile among generated tokens
-    # -------------------------
     special_ids = set()
     for tid in [
         getattr(tokenizer, "eos_token_id", None),
@@ -476,9 +460,6 @@ def compute_focus_and_rauq_single(
         if not kw_mask.any():
             kw_mask[int(np.argmax(idf_arr))] = True
 
-    # -------------------------
-    # Focus propagation (eq 4-6): only between keywords
-    # -------------------------
     h_hat = torch.zeros_like(h)
     kw_idx = np.where(kw_mask)[0].tolist()
     kw_set = set(kw_idx)
@@ -494,7 +475,7 @@ def compute_focus_and_rauq_single(
             h_hat[i] = base
             continue
 
-        att_row = att_r[i]  # (gen_len,)
+        att_row = att_r[i]
         att_prev = att_row[
             torch.tensor(prev_kw, device=att_row.device, dtype=torch.long)
         ]
@@ -510,7 +491,6 @@ def compute_focus_and_rauq_single(
         penalty = torch.sum(w * prev_scores)
         h_hat[i] = base + float(focus_gamma) * penalty
 
-    # sentence-level Focus score: average over keywords (eq 3)
     if len(kw_idx) == 0:
         focus_score = float("nan")
     else:
@@ -518,16 +498,12 @@ def compute_focus_and_rauq_single(
             h_hat[torch.tensor(kw_idx, device=h_hat.device)].mean().item()
         )
 
-    # -------------------------
-    # RAUQ (eq 1-4)
-    # -------------------------
     rauq_layer_scores: List[float] = []
     gen_positions = list(range(gen_start, gen_end))
 
     for l in sorted(rauq_attentions.keys()):
-        A_l = rauq_attentions[l]  # (heads, L, L) already float32 on CPU
+        A_l = rauq_attentions[l]
 
-        # head selection by mean attention to preceding token in the response (eq 1)
         if gen_len < 2:
             head_best = 0
             a_prev = torch.zeros((0,), device=A_l.device, dtype=torch.float32)
@@ -547,9 +523,8 @@ def compute_focus_and_rauq_single(
                 gi = gen_positions[i]
                 gj = gen_positions[i - 1]
                 a_vals.append(A_l[head_best, gi, gj])
-            a_prev = torch.stack(a_vals)  # (gen_len-1,)
+            a_prev = torch.stack(a_vals)
 
-        # recurrent confidence (eq 2)
         alpha = float(rauq_alpha)
         c = torch.zeros((gen_len,), device="cpu", dtype=torch.float32)
         c[0] = p_tok[0]
@@ -561,7 +536,7 @@ def compute_focus_and_rauq_single(
                 c[i] = alpha * cur_p + (1.0 - alpha) * att_w * c[i - 1]
 
         c = torch.clamp(c, min=eps)
-        u_l = -torch.log(c).mean()  # eq 3
+        u_l = -torch.log(c).mean()
         rauq_layer_scores.append(float(u_l.item()))
 
     del rauq_attentions
@@ -633,7 +608,7 @@ def main() -> None:
         torch_dtype="auto",
         low_cpu_mem_usage=True,
         local_files_only=True,
-        attn_implementation="eager",  # IMPORTANT: ensures attentions are returned
+        attn_implementation="eager",
     )
     model.eval()
     log(f"Model loaded. torch.cuda.device_count() = {torch.cuda.device_count()}")
@@ -656,7 +631,6 @@ def main() -> None:
         log(f"  device_map (first 10): {dict(list(dev_map.items())[:10])}")
     log("")
 
-    # ---------- First pass: count tokens and questions per language
     log("First pass: counting tokens and questions per language...")
     total_tokens_raw: Dict[str, int] = {}
     question_token_counts: Dict[str, List[int]] = {}
@@ -686,7 +660,6 @@ def main() -> None:
     common_tokens = min(total_tokens_raw.values()) if total_tokens_raw else 0
     log(f"\nCommon token budget (min over langs): {common_tokens}")
 
-    # Count how many questions fit within common_tokens per language
     questions_per_lang: Dict[str, int] = {}
     for lang in LANGS:
         used = 0
@@ -702,7 +675,6 @@ def main() -> None:
     log(f"Common question budget (min over langs): {common_questions}")
     log("")
 
-    # ---------- Second pass: compute RAUQ + Focus for common_questions per language
     log("Second pass: estimating RAUQ + Focus (common_questions per language)...")
 
     stats_per_lang: Dict[str, Dict[str, Any]] = {
@@ -722,7 +694,6 @@ def main() -> None:
         log(f"[{lang}] processing {path}")
         log(f"[{lang}] target question budget: {common_questions}")
 
-        # IDF for this language only (independent)
         log(f"[{lang}] computing/loading IDF (max_docs={IDF_MAX_DOCS})...")
         idf_np = compute_or_load_idf_for_lang(
             tokenizer=tokenizer,
@@ -760,7 +731,6 @@ def main() -> None:
                         len(tokenizer.encode(model_input, add_special_tokens=False))
                     )
 
-                    # Resume: restore from checkpoint
                     if question_idx in existing_results:
                         rec = existing_results[question_idx]
                         st = stats_per_lang[lang]
@@ -818,7 +788,6 @@ def main() -> None:
                     used_tokens += text_tokens
                     st["used_tokens"] = used_tokens
 
-                    # Save checkpoint
                     rec = {
                         "index": question_idx,
                         "language": lang,
@@ -834,7 +803,6 @@ def main() -> None:
                     )
                     log("")
 
-                    # Periodic memory cleanup every 10 questions
                     if question_idx % 10 == 0:
                         gc.collect()
                         torch.cuda.empty_cache()
@@ -845,11 +813,9 @@ def main() -> None:
         )
         log("")
 
-        # Clean up memory after each language
         gc.collect()
         torch.cuda.empty_cache()
 
-    # ---------- Save summary
     output_path = os.path.join(OUTPUT_DIR, "rauq_focus_summary.tsv")
     log(f"Saving aggregated metrics to {output_path}")
 
